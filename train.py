@@ -213,6 +213,7 @@ def main(cfg: DictConfig):
     #     delayed=False,
     #     gradient_clipping=trust_region_clip_,
     #     update_clipping=rmsnorm_clip_,
+    #     memory_save_mode=None,
     # )
     optimizer = heavyball.ForeachSOAP(
         model.encoder.parameters(),
@@ -221,7 +222,20 @@ def main(cfg: DictConfig):
         weight_decay=cfg.optimizer.weight_decay,
         caution=True,
         foreach=True,
+        update_clipping=rmsnorm_clip_,
+        gradient_clipping=trust_region_clip_,
     )
+    # optimizer = heavyball.ForeachSFAdamW(
+    #     model.encoder.parameters(),
+    #     lr=cfg.optimizer.learning_rate,
+    #     warmup_steps=cfg.optimizer.warmup_steps,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    #     caution=True,
+    #     foreach=True,
+    #     update_clipping=rmsnorm_clip_,
+    #     gradient_clipping=trust_region_clip_,
+    #     palm=True,
+    # )
     train(
         cfg,
         train_dataloader,
