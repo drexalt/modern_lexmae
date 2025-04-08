@@ -1,0 +1,18 @@
+[project]
+name = "modern-lexmae"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "datasets>=3.5.0",
+    "heavyball>=1.7.2",
+    "hydra-core>=1.3.2",
+    "ipykernel>=6.29.5",
+    "multidict==6.2.0",
+    "sentence-transformers>=4.0.1",
+    "setuptools>=78.1.0",
+    "torch>=2.6.0",
+    "transformers>=4.50.3",
+    "wandb>=0.19.9",
+]

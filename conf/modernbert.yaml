@@ -1,0 +1,30 @@
+# conf/config.yaml
+defaults:
+  - _self_
+
+num_train_epochs: 3
+max_train_steps: 10000
+batch_size: 64
+
+logging_steps: 100
+save_steps: 500
+eval_steps: 500
+enc_mlm_prob: 0.30
+dec_mlm_prob: 0.50
+dec_mlm_overlap: "inclusive"  # Options: random, inclusive, exclusive
+mlm_enc_loss_weight: 1.0
+mlm_dec_loss_weight: 1.0
+
+wandb: True
+wandb_project: "modernbert-lexmae"
+log_every: 20
+model:
+  model_name_or_path: "answerdotai/modernbert-base"
+  max_length: 512
+
+optimizer:
+  learning_rate: 2e-6
+  warmup_steps: 10000
+  every_k_schedule: 4
+  weight_decay: 0.01
+
