@@ -39,7 +39,7 @@ echo "Installing project dependencies..."
 uv sync
 
 echo "Installing flash-attn..."
-uv pip install flash-attn --no-build-isolation
+FLASH_ATTENTION_SKIP_CUDA_BUILD=TRUE pip install flash-attn --no-build-isolation
 
 echo "Environment setup complete! uv should now be available."
 echo "Run 'uv --version' to confirm."
