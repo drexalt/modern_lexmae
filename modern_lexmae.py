@@ -46,6 +46,8 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                 for i in range(self.n_head_layers)
             ]
         )
+
+        # Weights tied here
         self._tie_or_clone_weights(self.dec_head.dense, self.head.dense)
         self.sparse_prediction = True
 
@@ -585,7 +587,9 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                 dec_labels_flat = dec_labels.view(-1)
                 dec_mask_tokens = dec_labels_flat != self.sparse_pred_ignore_index
                 masked_indices = torch.where(dec_mask_tokens)[0]
-                dec_last_hidden_flat = dec_last_hidden.view(-1, dec_last_hidden.size(-1))
+                dec_last_hidden_flat = dec_last_hidden.view(
+                    -1, dec_last_hidden.size(-1)
+                )
                 dec_last_hidden_masked = dec_last_hidden_flat[dec_mask_tokens]
                 dec_logits = (
                     self.compiled_head(dec_last_hidden_masked)
@@ -601,12 +605,12 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                 )
                 dec_labels_masked = dec_labels
 
-
             # Compute decoder loss
             dec_loss = None
             if dec_labels is not None:
                 dec_loss = CrossEntropyLoss()(
-                    dec_logits.view(-1, self.config.vocab_size), dec_labels_masked.view(-1)
+                    dec_logits.view(-1, self.config.vocab_size),
+                    dec_labels_masked.view(-1),
                 )
             # Repad decoder logits
             if self.config._attn_implementation == "flash_attention_2":

@@ -162,6 +162,11 @@ def train(cfg, train_dataloader, model, optimizer, device):
                 "learning_rate": cfg.optimizer.learning_rate,
                 "warmup_steps": cfg.optimizer.warmup_steps,
                 "optimizer": optimizer.__class__.__name__,
+                "accumulation_steps": cfg.accumulation_steps,
+                "enc_mlm_prob": cfg.enc_mlm_prob,
+                "dec_mlm_prob": cfg.dec_mlm_prob,
+                "mlm_enc_loss_weight": cfg.mlm_enc_loss_weight,
+                "mlm_dec_loss_weight": cfg.mlm_dec_loss_weight,
             },
         )
     for epoch in range(cfg.num_train_epochs):
@@ -169,9 +174,16 @@ def train(cfg, train_dataloader, model, optimizer, device):
             batch = {k: v.to(device) for k, v in batch.items()}  # Move batch to device
             loss_dict = model(training_mode="pre-training", **batch)
             loss = loss_dict["loss"]
+
+            loss = loss / cfg.accumulation_steps
             loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+
+            if (step + 1) % cfg.accumulation_steps == 0 or (step + 1) == len(
+                train_dataloader
+            ):
+                optimizer.step()
+                optimizer.zero_grad()
+
             if cfg.wandb and step % cfg.log_every == 0:
                 wandb.log(
                     {
@@ -225,6 +237,11 @@ def main(cfg: DictConfig):
         update_clipping=rmsnorm_clip_,
         gradient_clipping=trust_region_clip_,
     )
+    # optimizer = torch.optim.AdamW(
+    #     model.encoder.parameters(),
+    #     lr=cfg.optimizer.learning_rate,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    # )
     # optimizer = heavyball.ForeachSFAdamW(
     #     model.encoder.parameters(),
     #     lr=cfg.optimizer.learning_rate,
