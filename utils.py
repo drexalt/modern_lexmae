@@ -1,5 +1,57 @@
 import torch
 from functools import reduce
+import os
+from heapq import heappush, heapreplace
+
+
+def save_checkpoint(
+    step: int,
+    loss: float,
+    splade_model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: str,
+) -> str:
+    checkpoint = {
+        "splade_model": splade_model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+        "loss": loss,
+    }
+    filepath = os.path.join(
+        checkpoint_path, f"checkpoint_step_{step}_loss_{loss:.4f}.pt"
+    )
+    torch.save(checkpoint, filepath)
+    return filepath
+
+
+def update_checkpoint_tracking(
+    step: int,
+    loss: float,
+    checkpoint_losses: list,
+    max_checkpoints: int,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: str,
+) -> list:
+    updated_checkpoint_losses = checkpoint_losses.copy()
+    neg_loss = -loss
+
+    if len(updated_checkpoint_losses) < max_checkpoints:
+        filepath = save_checkpoint(step, loss, model, optimizer, checkpoint_path)
+        heappush(updated_checkpoint_losses, (neg_loss, step, filepath))
+    elif neg_loss > updated_checkpoint_losses[0][0]:
+        new_filepath = save_checkpoint(step, loss, model, optimizer, checkpoint_path)
+        _, old_step, old_filepath = heapreplace(
+            updated_checkpoint_losses, (neg_loss, step, new_filepath)
+        )
+        print(f"Checkpoint saved at {new_filepath}")
+        if os.path.exists(old_filepath):
+            try:
+                os.remove(old_filepath)
+            except OSError as e:
+                print(f"Error removing old checkpoint {old_filepath}: {e}")
+
+    return updated_checkpoint_losses
 
 
 def special_token_mask_generation(input_ids, special_token_ids):

@@ -1,5 +1,6 @@
+import os
 from modern_lexmae import ModernBertForLexMAE
-from utils import mlm_input_ids_masking_onthefly
+from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
 from data import LexMAECollate
@@ -169,6 +170,12 @@ def train(cfg, train_dataloader, model, optimizer, device):
                 "mlm_dec_loss_weight": cfg.mlm_dec_loss_weight,
             },
         )
+
+    os.makedirs(
+        hydra.utils.to_absolute_path(cfg.checkpoint.checkpoint_path), exist_ok=True
+    )
+    checkpoint_losses = []
+
     for epoch in range(cfg.num_train_epochs):
         for step, batch in enumerate(tqdm(train_dataloader)):
             batch = {k: v.to(device) for k, v in batch.items()}  # Move batch to device
@@ -187,11 +194,26 @@ def train(cfg, train_dataloader, model, optimizer, device):
             if cfg.wandb and step % cfg.log_every == 0:
                 wandb.log(
                     {
-                        "loss": loss.item(),
+                        "loss": loss_dict["loss"].item(),
                         "mlm_enc_loss": loss_dict["mlm_enc_loss"].item(),
                         "mlm_dec_loss": loss_dict["mlm_dec_loss"].item(),
                     },
                     step=(epoch * len(train_dataloader)) + step,
+                )
+            if (
+                cfg.checkpoint.checkpoint_every > 0
+                and (step + 1) % cfg.checkpoint.checkpoint_every == 0
+            ):
+                checkpoint_losses = update_checkpoint_tracking(
+                    step=(epoch * len(train_dataloader)) + step,
+                    loss=loss_dict["loss"].item(),
+                    checkpoint_losses=checkpoint_losses,
+                    max_checkpoints=cfg.checkpoint.max_to_keep,
+                    model=model,
+                    optimizer=optimizer,
+                    checkpoint_path=hydra.utils.to_absolute_path(
+                        cfg.checkpoint.checkpoint_path
+                    ),
                 )
 
 
@@ -227,22 +249,7 @@ def main(cfg: DictConfig):
     #     update_clipping=rmsnorm_clip_,
     #     memory_save_mode=None,
     # )
-    optimizer = heavyball.ForeachSOAP(
-        model.encoder.parameters(),
-        lr=cfg.optimizer.learning_rate,
-        warmup_steps=cfg.optimizer.warmup_steps,
-        weight_decay=cfg.optimizer.weight_decay,
-        caution=True,
-        foreach=True,
-        update_clipping=rmsnorm_clip_,
-        gradient_clipping=trust_region_clip_,
-    )
-    # optimizer = torch.optim.AdamW(
-    #     model.encoder.parameters(),
-    #     lr=cfg.optimizer.learning_rate,
-    #     weight_decay=cfg.optimizer.weight_decay,
-    # )
-    # optimizer = heavyball.ForeachSFAdamW(
+    # optimizer = heavyball.ForeachSOAP(
     #     model.encoder.parameters(),
     #     lr=cfg.optimizer.learning_rate,
     #     warmup_steps=cfg.optimizer.warmup_steps,
@@ -251,8 +258,19 @@ def main(cfg: DictConfig):
     #     foreach=True,
     #     update_clipping=rmsnorm_clip_,
     #     gradient_clipping=trust_region_clip_,
-    #     palm=True,
     # )
+    # optimizer = torch.optim.AdamW(
+    #     model.encoder.parameters(),
+    #     lr=cfg.optimizer.learning_rate,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    # )
+    optimizer = heavyball.ForeachSFAdamW(
+        model.encoder.parameters(),
+        lr=cfg.optimizer.learning_rate,
+        warmup_steps=cfg.optimizer.warmup_steps,
+        weight_decay=cfg.optimizer.weight_decay,
+        foreach=True,
+    )
     train(
         cfg,
         train_dataloader,
