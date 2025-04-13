@@ -4,7 +4,7 @@ defaults:
 
 num_train_epochs: 3
 batch_size: 48
-accumulation_steps: 8
+accumulation_steps: 16
 
 logging_steps: 100
 save_steps: 500
@@ -25,9 +25,11 @@ model:
 checkpoint:
   checkpoint_path: "checkpoints/modernbert-lexmae"
   max_to_keep: 3
-  checkpoint_every: 20
+  checkpoint_every: 500
 optimizer:
-  learning_rate: 3e-4
+  learning_rate: 5e-4
+  enc_learning_rate: 3e-5
+  dec_learning_rate: 8e-4
   warmup_steps: 15000
   every_k_schedule: 4
   weight_decay: 0.01

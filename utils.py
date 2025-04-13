@@ -7,12 +7,12 @@ from heapq import heappush, heapreplace
 def save_checkpoint(
     step: int,
     loss: float,
-    splade_model: torch.nn.Module,
+    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     checkpoint_path: str,
 ) -> str:
     checkpoint = {
-        "splade_model": splade_model.state_dict(),
+        "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "step": step,
         "loss": loss,

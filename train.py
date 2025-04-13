@@ -228,37 +228,36 @@ def main(cfg: DictConfig):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+
+    # encoder_params = []
+    # decoder_params = []
+    # base_model_prefix = model.encoder.base_model_prefix
+    # encoder_head_prefix = "head."
+    # for name, param in model.encoder.named_parameters():
+    #     if param.requires_grad:
+    #         if name.startswith(base_model_prefix + ".") or name.startswith(
+    #             encoder_head_prefix
+    #         ):
+    #             encoder_params.append(param)
+    #         else:
+    #             decoder_params.append(param)
+
+    # optimizer_grouped_parameters = [
+    #     {"params": encoder_params, "lr": cfg.optimizer.enc_learning_rate},
+    #     {"params": decoder_params, "lr": cfg.optimizer.dec_learning_rate},
+    # ]
+
     dataset = load_dataset("BeIR/msmarco", "corpus", split="corpus")
     train_dataloader = DataLoader(
         dataset,
-        num_workers=1,
+        num_workers=4,
         batch_size=cfg.batch_size,
         collate_fn=LexMAECollate(tokenizer, max_length=cfg.model.max_length),
+        pin_memory=True,
     )
     heavyball.utils.compile_mode = None
     heavyball.utils.set_torch()
-    # optimizer = heavyball.ForeachPSGDKron(
-    #     model.encoder.parameters(),
-    #     lr=cfg.optimizer.learning_rate,
-    #     warmup_steps=cfg.optimizer.warmup_steps,
-    #     weight_decay=cfg.optimizer.weight_decay,
-    #     caution=True,
-    #     foreach=True,
-    #     delayed=False,
-    #     gradient_clipping=trust_region_clip_,
-    #     update_clipping=rmsnorm_clip_,
-    #     memory_save_mode=None,
-    # )
-    # optimizer = heavyball.ForeachSOAP(
-    #     model.encoder.parameters(),
-    #     lr=cfg.optimizer.learning_rate,
-    #     warmup_steps=cfg.optimizer.warmup_steps,
-    #     weight_decay=cfg.optimizer.weight_decay,
-    #     caution=True,
-    #     foreach=True,
-    #     update_clipping=rmsnorm_clip_,
-    #     gradient_clipping=trust_region_clip_,
-    # )
+
     # optimizer = torch.optim.AdamW(
     #     model.encoder.parameters(),
     #     lr=cfg.optimizer.learning_rate,
