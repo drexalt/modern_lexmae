@@ -5,6 +5,7 @@ defaults:
 num_train_epochs: 3
 batch_size: 48
 accumulation_steps: 16
+n_head_layers: 4
 
 logging_steps: 100
 save_steps: 500
@@ -33,4 +34,3 @@ optimizer:
   warmup_steps: 15000
   every_k_schedule: 4
   weight_decay: 0.01
-

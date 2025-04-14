@@ -162,6 +162,7 @@ def train(cfg, train_dataloader, model, optimizer, device):
                 "batch_size": cfg.batch_size,
                 "learning_rate": cfg.optimizer.learning_rate,
                 "warmup_steps": cfg.optimizer.warmup_steps,
+                "head_layers": cfg.n_head_layers,
                 "optimizer": optimizer.__class__.__name__,
                 "accumulation_steps": cfg.accumulation_steps,
                 "enc_mlm_prob": cfg.enc_mlm_prob,
@@ -220,6 +221,7 @@ def train(cfg, train_dataloader, model, optimizer, device):
 @hydra.main(config_path="conf", config_name="modernbert")
 def main(cfg: DictConfig):
     config = AutoConfig.from_pretrained(cfg.model.model_name_or_path)
+    config.n_head_layers = cfg.n_head_layers
     encoder = ModernBertForLexMAE.from_pretrained(
         cfg.model.model_name_or_path, config=config
     )
