@@ -49,6 +49,24 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
 
         # Weights tied here
         self._tie_or_clone_weights(self.dec_head.dense, self.head.dense)
+        self._tie_or_clone_weights(self.dec_head.norm, self.head.norm)
+
+        self.decoder.weight.requires_grad = False
+        self.decoder.bias.requires_grad = False
+
+        k = self.n_head_layers
+        for i, dec_layer in enumerate(self.decoder_heads):
+            src_layer = self.model.layers[-k + i]  # encoder L‑k+i
+
+            src_sd = src_layer.state_dict()
+            tgt_sd = dec_layer.state_dict()
+            filtered = {
+                n: w
+                for n, w in src_sd.items()
+                if n in tgt_sd and w.shape == tgt_sd[n].shape
+            }
+
+            dec_layer.load_state_dict(filtered, strict=False)
         self.sparse_prediction = True
 
         self.special_token_ids = [self.config.cls_token_id, self.config.sep_token_id]
@@ -612,12 +630,12 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                     dec_logits.view(-1, self.config.vocab_size),
                     dec_labels_masked.view(-1),
                 )
-            # Repad decoder logits
-            if self.config._attn_implementation == "flash_attention_2":
-                with torch.no_grad():
-                    dec_logits = _pad_modernbert_output(
-                        dec_logits, masked_indices, dec_batch_size, dec_seq_len
-                    )
+            # # Repad decoder logits - this is not correct, masked_indices should be dec_indices, but we're not using logits anyway
+            # if self.config._attn_implementation == "flash_attention_2":
+            #     with torch.no_grad():
+            #         dec_logits = _pad_modernbert_output(
+            #             dec_logits, masked_indices, dec_batch_size, dec_seq_len
+            #         )
 
             # Update return dictionary
             return_dict_out.dec_loss = dec_loss
