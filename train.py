@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from modern_lexmae import ModernBertForLexMAE
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
@@ -171,10 +172,11 @@ def train(cfg, train_dataloader, model, optimizer, device):
                 "mlm_dec_loss_weight": cfg.mlm_dec_loss_weight,
             },
         )
-
-    os.makedirs(
-        hydra.utils.to_absolute_path(cfg.checkpoint.checkpoint_path), exist_ok=True
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    checkpoint_directory = os.path.join(
+        hydra.utils.to_absolute_path(cfg.checkpoint.checkpoint_path), timestamp
     )
+    os.makedirs(checkpoint_directory, exist_ok=True)
     checkpoint_losses = []
 
     for epoch in range(cfg.num_train_epochs):
@@ -212,9 +214,7 @@ def train(cfg, train_dataloader, model, optimizer, device):
                     max_checkpoints=cfg.checkpoint.max_to_keep,
                     model=model,
                     optimizer=optimizer,
-                    checkpoint_path=hydra.utils.to_absolute_path(
-                        cfg.checkpoint.checkpoint_path
-                    ),
+                    checkpoint_path=checkpoint_directory,
                 )
 
 
