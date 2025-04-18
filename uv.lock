@@ -458,16 +458,16 @@ wheels = [
 
 [[package]]
 name = "heavyball"
-version = "1.7.2"
+version = "1.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "opt-einsum" },
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/48/7c45b21591b3ba6e81e266ff24b571571aa938e03bf3c377d4aad00e5b5a/heavyball-1.7.2.tar.gz", hash = "sha256:0aa07f06d00484876cbaf0800ac727e2ba1af355f4c69710ae626f794fc6663e", size = 61920 }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/9a/8de1d77734e0d6c6a92cae4b2c66470c01083b62703cdb20ac0ad97240f5/heavyball-1.6.3.tar.gz", hash = "sha256:9d775db7a28738bfd26001402cb00e7172560afb4a9815f38f70635d32d8b872", size = 56215 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/70/4dcd9d09a2c8f930d65b5fd734c8acb644f7fa033fc83fa0c468612fc228/heavyball-1.7.2-py3-none-any.whl", hash = "sha256:6acc6ba4221db8f96d56c37c21b4882725088179ab03216363e435699026728d", size = 39276 },
+    { url = "https://files.pythonhosted.org/packages/10/c4/1ebdc46bbfcda89fb971c88efe39e5c13ac2bd269d99dd2320c4ee7a1a75/heavyball-1.6.3-py3-none-any.whl", hash = "sha256:5e786519894bfd57b297c856d6664bd9ac5dc4af3bb7e08fcdb88a10237ac48f", size = 33878 },
 ]
 
 [[package]]
@@ -712,7 +712,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.5.0" },
-    { name = "heavyball", specifier = ">=1.7.2" },
+    { name = "heavyball", specifier = "==1.6.3" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "multidict", specifier = "==6.2.0" },
