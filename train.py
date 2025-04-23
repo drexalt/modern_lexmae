@@ -14,6 +14,9 @@ from heavyball.utils import trust_region_clip_, rmsnorm_clip_
 import torch
 import wandb
 from tqdm import tqdm
+from sentence_transformers.evaluation import NanoBEIREvaluator
+from sentence_transformers.similarity_functions import dot_score
+from eval.validate import validate_lexmae
 
 
 class LexmaeLearner(LearnerMixin):
@@ -40,6 +43,7 @@ class LexmaeLearner(LearnerMixin):
         attention_mask=None,
         token_type_ids=None,
         position_ids=None,
+        bag_word_weight=None,
         masked_input_ids=None,
         masked_flags=None,
         mlm_labels=None,
@@ -52,11 +56,12 @@ class LexmaeLearner(LearnerMixin):
         **kwargs,
     ):
         if training_mode is None:
-            raise self.encoder(
+            return self.encoder(
                 input_ids,
                 attention_mask,
                 token_type_ids,
                 position_ids,
+                disable_decoding=True,
             )
 
         # embedding
@@ -88,12 +93,13 @@ class LexmaeLearner(LearnerMixin):
             attention_mask,
             token_type_ids,
             position_ids,
+            bag_word_weight=bag_word_weight,
             labels=mlm_labels,
             disable_encoding=False,
             disable_decoding=True,
         )
-        dict_for_loss["mlm_enc_loss"] = enc_outputs.loss
-
+        dict_for_loss["mlm_enc_loss"] = enc_outputs.enc_loss
+        dict_for_loss["bow_loss"] = enc_outputs.bow_loss
         # decoder masking and forward
         if dec_masked_input_ids is None:
             if self.cfg.dec_mlm_overlap == "random":
@@ -145,7 +151,8 @@ class LexmaeLearner(LearnerMixin):
         )
         dict_for_loss["mlm_dec_loss"] = dec_outputs.dec_loss
         total_loss = (
-            self.cfg.mlm_enc_loss_weight * dict_for_loss["mlm_enc_loss"]
+            self.cfg.bow_loss_weight * dict_for_loss["bow_loss"]
+            + self.cfg.mlm_enc_loss_weight * dict_for_loss["mlm_enc_loss"]
             + self.cfg.mlm_dec_loss_weight * dict_for_loss["mlm_dec_loss"]
         )
         dict_for_loss["loss"] = total_loss
@@ -153,7 +160,7 @@ class LexmaeLearner(LearnerMixin):
         return dict_for_loss
 
 
-def train(cfg, train_dataloader, model, optimizer, device):
+def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
     model.train()
     model.zero_grad()
     if cfg.wandb:
@@ -170,6 +177,7 @@ def train(cfg, train_dataloader, model, optimizer, device):
                 "dec_mlm_prob": cfg.dec_mlm_prob,
                 "mlm_enc_loss_weight": cfg.mlm_enc_loss_weight,
                 "mlm_dec_loss_weight": cfg.mlm_dec_loss_weight,
+                "bow_loss_weight": cfg.bow_loss_weight,
             },
         )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -178,6 +186,12 @@ def train(cfg, train_dataloader, model, optimizer, device):
     )
     os.makedirs(checkpoint_directory, exist_ok=True)
     checkpoint_losses = []
+    evaluator = NanoBEIREvaluator(
+        dataset_names=cfg.evaluation.datasets,
+        score_functions={"dot": dot_score},
+        batch_size=cfg.evaluation.batch_size,
+        show_progress_bar=True,
+    )
 
     for epoch in range(cfg.num_train_epochs):
         for step, batch in enumerate(tqdm(train_dataloader)):
@@ -200,9 +214,37 @@ def train(cfg, train_dataloader, model, optimizer, device):
                         "loss": loss_dict["loss"].item(),
                         "mlm_enc_loss": loss_dict["mlm_enc_loss"].item(),
                         "mlm_dec_loss": loss_dict["mlm_dec_loss"].item(),
+                        "bow_loss": loss_dict["bow_loss"].item(),
                     },
                     step=(epoch * len(train_dataloader)) + step,
                 )
+
+            if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 5:
+                model.eval()
+                val_results = validate_lexmae(
+                    evaluator,
+                    model,
+                    tokenizer,
+                    device,
+                )
+                model.train()
+
+                if cfg.wandb:
+                    # Flatten results for wandb logging
+                    wandb.log(
+                        {
+                            "validation/ndcg@10": val_results["ndcg@10"],
+                            "validation/mrr@10": val_results["mrr@10"],
+                            "validation/map@100": val_results["map@100"],
+                            **{
+                                f"validation/supplementary/{k}": v
+                                for k, v in val_results.items()
+                                if k not in ["ndcg@10", "mrr@10", "map@100"]
+                            },
+                        },
+                        step=(epoch * len(train_dataloader)) + step,
+                    )
+
             if (
                 cfg.checkpoint.checkpoint_every > 0
                 and (step + 1) % cfg.checkpoint.checkpoint_every == 0
@@ -272,13 +314,7 @@ def main(cfg: DictConfig):
         weight_decay=cfg.optimizer.weight_decay,
         foreach=True,
     )
-    train(
-        cfg,
-        train_dataloader,
-        model,
-        optimizer,
-        device,
-    )
+    train(cfg, train_dataloader, model, optimizer, device, tokenizer)
 
 
 if __name__ == "__main__":

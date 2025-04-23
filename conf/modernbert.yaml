@@ -3,9 +3,9 @@ defaults:
   - _self_
 
 num_train_epochs: 3
-batch_size: 48
+batch_size: 32
 accumulation_steps: 16
-n_head_layers: 4
+n_head_layers: 2
 
 logging_steps: 100
 save_steps: 500
@@ -15,18 +15,23 @@ dec_mlm_prob: 0.50
 dec_mlm_overlap: "inclusive"  # Options: random, inclusive, exclusive
 mlm_enc_loss_weight: 1.0
 mlm_dec_loss_weight: 1.0
+bow_loss_weight: 1.0
 
 wandb: True
 wandb_project: "modernbert-lexmae"
 log_every: 20
 model:
   model_name_or_path: "answerdotai/modernbert-base"
-  max_length: 512
+  max_length: 256
 
 checkpoint:
   checkpoint_path: "checkpoints/modernbert-lexmae"
   max_to_keep: 3
   checkpoint_every: 500
+evaluation:
+  eval_every_steps: 5000
+  datasets: ["scifact", "quoraretrieval", "msmarco"]
+  batch_size: 4
 optimizer:
   learning_rate: 5e-4
   enc_learning_rate: 3e-5

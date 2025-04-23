@@ -21,6 +21,8 @@ class LexMAEMaskedLMOutput(MaskedLMOutput):
     dec_logits: Optional[torch.Tensor] = None
     dec_hidden_states: Optional[torch.Tensor] = None
     dec_attentions: Optional[torch.Tensor] = None
+    enc_loss: Optional[torch.Tensor] = None
+    bow_loss: Optional[torch.Tensor] = None
 
 
 class ModernBertForLexMAE(ModernBertForMaskedLM):
@@ -35,6 +37,7 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
         # Decoder-specific attributes from LexMAE
         self.n_head_layers = getattr(config, "n_head_layers", 2)
         self.skip_from = getattr(config, "skip_from", None)
+        self.bow_loss_weight = getattr(config, "bow_loss_weight", 0.2)
 
         # Add decoder MLM head (separate from encoder's self.head)
         self.dec_head = ModernBertPredictionHead(config)
@@ -72,6 +75,33 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
         self.special_token_ids = [self.config.cls_token_id, self.config.sep_token_id]
         # Initialize weights for new components
         self.post_init()
+
+    ## DUP-MAE
+    def ot_embedding(self, logits: torch.Tensor, attention_mask: torch.Tensor):
+        """
+        Project token‑level logits to a document‑level vector by
+        max‑pooling over sequence positions (DupMAE Equation 3).
+        Args:
+            logits           – [bs, seq_len, vocab]
+            attention_mask   – [bs, seq_len]  (1 = keep, 0 = padding)
+        Returns:
+            reps             – [bs, vocab]
+        """
+        mask_unsqueeze = attention_mask.unsqueeze(-1).bool()
+        masked_logits = torch.where(mask_unsqueeze, logits, float("-inf"))
+        reps, _ = torch.max(masked_logits, dim=1)
+        return reps
+
+    # DUP-MAE
+    def bow_ot_loss(self, ot_embedding: torch.Tensor, bag_word_weight: torch.Tensor):
+        """
+        Cross‑entropy between pooled logits and target BoW distribution.
+        Args:
+            ot_embedding    – [bs, vocab]
+            bag_word_weight – [bs, vocab]   (row‑normalised to 1.0)
+        """
+        log_probs = torch.log_softmax(ot_embedding, dim=-1)
+        return torch.mean(-torch.sum(bag_word_weight * log_probs, dim=-1))
 
     def text_part_mask_generation(self, input_ids, special_token_ids, attention_mask):
         """
@@ -387,6 +417,7 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
         return_dict: Optional[bool] = None,
         disable_encoding: bool = False,
         disable_decoding: bool = True,
+        bag_word_weight: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, LexMAEMaskedLMOutput]:
         """
         Forward pass for ModernBertForLexMAE with dual MLM tasks.
@@ -518,6 +549,15 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                     enc_logits.view(-1, self.config.vocab_size), labels_loss.view(-1)
                 )
 
+            bow_loss = None
+            if bag_word_weight is not None:
+                mask_text_part = self.text_part_mask_generation(
+                    input_ids_padded, self.special_token_ids, attention_mask
+                )
+                # skip [CLS] so shape matches Dup‑MAE impl
+                ot_emb = self.ot_embedding(enc_logits_full, mask_text_part)  # [bs, V]
+                bow_loss = self.bow_ot_loss(ot_emb, bag_word_weight)
+
             # Generate bottleneck representation with padded mlm_logits
             enc_cls_rep = self.generate_bottleneck_repre(
                 input_ids=input_ids_padded,
@@ -561,11 +601,26 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
             enc_hidden_states = outputs.hidden_states
 
             # Prepare return dictionary
-            return_dict_out.loss = enc_loss
+            return_dict_out.enc_loss = enc_loss
+            return_dict_out.bow_loss = bow_loss
             return_dict_out.logits = enc_logits_full
             return_dict_out.sentence_embedding = enc_cls_rep
             return_dict_out.hidden_states = enc_hidden_states
             return_dict_out.attentions = outputs.attentions
+
+            if enc_loss is not None or bow_loss is not None:
+                enc_loss = (
+                    enc_loss
+                    if enc_loss is not None
+                    else torch.tensor(0.0, device=enc_logits_full.device)
+                )
+                bow_loss = (
+                    bow_loss
+                    if bow_loss is not None
+                    else torch.tensor(0.0, device=enc_logits_full.device)
+                )
+                return_dict_out.loss = enc_loss + bow_loss
+
         else:
             if enc_cls_rep is None or enc_hidden_states is None:
                 raise ValueError(
