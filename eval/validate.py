@@ -18,11 +18,12 @@ def validate_lexmae(evaluator, model, tokenizer, device):
     """
     # Create the SentenceTransformer module
     st_module = ST_LexMAEModule(model, tokenizer, max_length=tokenizer.model_max_length)
-    st_model = SentenceTransformer(modules=[st_module]).to(device)
+    st_model = SentenceTransformer(modules=[st_module]).to(device).eval()
 
     # Evaluate with no gradient computation
     with torch.inference_mode():
-        results = evaluator(st_model)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            results = evaluator(st_model)
 
     # Clean up
     del st_module, st_model
