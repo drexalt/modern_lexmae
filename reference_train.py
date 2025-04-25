@@ -4,7 +4,7 @@ from bert_reference import BertForEDMLM
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
-from data import LexMAECollate
+from data import LexMAECollateDupMAE
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoConfig
 import hydra
@@ -20,14 +20,15 @@ from eval.validate import validate_lexmae
 
 
 class LexmaeLearner(LearnerMixin):
-    def __init__(self, model_args, config, tokenizer, encoder, query_encoder=None):
+    def __init__(self, cfg, config, tokenizer, encoder, query_encoder=None):
         super(LexmaeLearner, self).__init__(
-            model_args,
+            cfg,
             config,
             tokenizer,
             encoder,
             query_encoder,
         )
+        self.cfg = cfg
         self.mask_token_id = self.tokenizer.mask_token_id
         self.special_token_ids = [
             tokenizer.cls_token_id,
@@ -42,6 +43,7 @@ class LexmaeLearner(LearnerMixin):
         attention_mask=None,
         token_type_ids=None,
         position_ids=None,
+        bag_word_weight=None,
         masked_input_ids=None,
         masked_flags=None,
         mlm_labels=None,
@@ -96,9 +98,10 @@ class LexmaeLearner(LearnerMixin):
             enc_mlm_labels=mlm_labels,
             disable_encoding=False,
             disable_decoding=True,
+            bag_word_weight=bag_word_weight,
         )
         dict_for_loss["mlm_enc_loss"] = enc_outputs["loss"]
-
+        dict_for_loss["bow_loss"] = enc_outputs["bow_loss"]
         # decoder masking and forward
         if dec_masked_input_ids is None:
             if self.model_args.dec_mlm_overlap == "random":
@@ -149,17 +152,11 @@ class LexmaeLearner(LearnerMixin):
             disable_decoding=False,
         )
         dict_for_loss["mlm_dec_loss"] = dec_outputs["dec_loss"]
-
-        loss = 0.0
-        for k in dict_for_loss:
-            if k + "_weight" in dict_for_meta:
-                if dict_for_meta[k + "_weight"] == 0.0:
-                    loss += 0.0  # save calc
-                else:
-                    loss += dict_for_meta[k + "_weight"] * dict_for_loss[k]
-            else:
-                loss += dict_for_loss[k]
-        dict_for_loss["loss"] = loss
+        dict_for_loss["loss"] = (
+            self.cfg.mlm_enc_loss_weight * dict_for_loss["mlm_enc_loss"]
+            + self.cfg.mlm_dec_loss_weight * dict_for_loss["mlm_dec_loss"]
+            + self.cfg.bow_loss_weight * dict_for_loss["bow_loss"]
+        )
 
         dict_for_meta.update(dict_for_loss)
         return dict_for_meta
@@ -219,6 +216,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                         "loss": loss_dict["loss"].item(),
                         "mlm_enc_loss": loss_dict["mlm_enc_loss"].item(),
                         "mlm_dec_loss": loss_dict["mlm_dec_loss"].item(),
+                        "bow_loss": loss_dict["bow_loss"].item(),
                     },
                     step=(epoch * len(train_dataloader)) + step,
                 )
@@ -298,7 +296,7 @@ def main(cfg: DictConfig):
         dataset,
         num_workers=4,
         batch_size=cfg.batch_size,
-        collate_fn=LexMAECollate(tokenizer, max_length=cfg.model.max_length),
+        collate_fn=LexMAECollateDupMAE(tokenizer, max_length=cfg.model.max_length),
         pin_memory=True,
     )
     heavyball.utils.compile_mode = None

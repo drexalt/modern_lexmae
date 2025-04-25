@@ -29,7 +29,7 @@ checkpoint:
   max_to_keep: 3
   checkpoint_every: 500
 evaluation:
-  eval_every_steps: 5000
+  eval_every_steps: 500
   datasets: ["scifact", "quoraretrieval", "msmarco"]
   batch_size: 8
 optimizer:

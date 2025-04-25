@@ -353,6 +353,33 @@ class BertForEDMLM(BertPreTrainedModel):
             102,  # [SEP]
         ]
 
+    ## DUP-MAE
+    def ot_embedding(self, logits: torch.Tensor, attention_mask: torch.Tensor):
+        """
+        Project token‑level logits to a document‑level vector by
+        max‑pooling over sequence positions (DupMAE Equation 3).
+        Args:
+            logits           – [bs, seq_len, vocab]
+            attention_mask   – [bs, seq_len]  (1 = keep, 0 = padding)
+        Returns:
+            reps             – [bs, vocab]
+        """
+        mask_unsqueeze = attention_mask.unsqueeze(-1).bool()
+        masked_logits = torch.where(mask_unsqueeze, logits, float("-inf"))
+        reps, _ = torch.max(masked_logits, dim=1)
+        return reps
+
+    # DUP-MAE
+    def bow_ot_loss(self, ot_embedding: torch.Tensor, bag_word_weight: torch.Tensor):
+        """
+        Cross‑entropy between pooled logits and target BoW distribution.
+        Args:
+            ot_embedding    – [bs, vocab]
+            bag_word_weight – [bs, vocab]   (row‑normalised to 1.0)
+        """
+        log_probs = torch.log_softmax(ot_embedding, dim=-1)
+        return torch.mean(-torch.sum(bag_word_weight * log_probs, dim=-1))
+
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
 
@@ -435,6 +462,7 @@ class BertForEDMLM(BertPreTrainedModel):
         enc_hidden_states=None,
         enc_mlm_labels=None,
         dec_mlm_labels=None,
+        bag_word_weight=None,
         # output_attentions=None, output_hidden_states=None, return_dict=None,
         disable_encoding=False,
         disable_decoding=True,
@@ -474,6 +502,14 @@ class BertForEDMLM(BertPreTrainedModel):
                     prediction_scores.view(-1, self.config.vocab_size),
                     enc_mlm_labels.view(-1),
                 )
+            bow_loss = None
+            if bag_word_weight is not None:
+                mask_text_part = text_part_mask_generation(
+                    input_ids, self.special_token_ids, attention_mask
+                )
+                # skip [CLS] so shape matches Dup‑MAE impl
+                ot_emb = self.ot_embedding(prediction_scores, mask_text_part)  # [bs, V]
+                bow_loss = self.bow_ot_loss(ot_emb, bag_word_weight)
 
             return_dict = MaskedLMOutput(
                 loss=enc_masked_lm_loss,
@@ -481,6 +517,7 @@ class BertForEDMLM(BertPreTrainedModel):
                 hidden_states=outputs.hidden_states,
                 # attentions=outputs.attentions,
             )
+            return_dict["bow_loss"] = bow_loss
 
             assert enc_cls_rep is None and enc_hidden_states is None
             enc_hidden_states = return_dict.hidden_states
