@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from modern_lexmae import ModernBertForLexMAE
+from bert_reference import BertForEDMLM
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
@@ -20,22 +20,21 @@ from eval.validate import validate_lexmae
 
 
 class LexmaeLearner(LearnerMixin):
-    def __init__(self, cfg, config, tokenizer, encoder, query_encoder=None):
+    def __init__(self, model_args, config, tokenizer, encoder, query_encoder=None):
         super(LexmaeLearner, self).__init__(
-            cfg,
+            model_args,
             config,
             tokenizer,
             encoder,
             query_encoder,
         )
-        self.cfg = cfg
         self.mask_token_id = self.tokenizer.mask_token_id
         self.special_token_ids = [
             tokenizer.cls_token_id,
             tokenizer.sep_token_id,
         ]
-        self.vocab_size = self.tokenizer.vocab_size
-        # self.base_model_prefix = "encoder." + encoder.base_model_prefix
+        self.vocab_size = len(self.tokenizer)
+        self.base_model_prefix = "encoder." + encoder.base_model_prefix
 
     def forward(
         self,
@@ -43,7 +42,6 @@ class LexmaeLearner(LearnerMixin):
         attention_mask=None,
         token_type_ids=None,
         position_ids=None,
-        bag_word_weight=None,
         masked_input_ids=None,
         masked_flags=None,
         mlm_labels=None,
@@ -61,11 +59,13 @@ class LexmaeLearner(LearnerMixin):
                 attention_mask,
                 token_type_ids,
                 position_ids,
-                disable_decoding=True,
             )
 
         # embedding
-        dict_for_loss = {}
+        dict_for_meta, dict_for_loss = {}, {}
+
+        dict_for_meta["mlm_enc_loss_weight"] = self.model_args.mlm_enc_loss_weight
+        dict_for_meta["mlm_dec_loss_weight"] = self.model_args.mlm_dec_loss_weight
 
         # encoder masking and forward
         if masked_input_ids is None:  # on-the-fly generation
@@ -75,7 +75,7 @@ class LexmaeLearner(LearnerMixin):
                     attention_mask,
                     self.mask_token_id,
                     self.special_token_ids,
-                    mlm_prob=self.cfg.enc_mlm_prob,
+                    mlm_prob=self.model_args.enc_mlm_prob,
                     mlm_rdm_prob=0.1,
                     mlm_keep_prob=0.1,
                     vocab_size=self.vocab_size,
@@ -84,37 +84,36 @@ class LexmaeLearner(LearnerMixin):
                     resample_nonmask=False,
                 )
             )
-            enc_mlm_prob = self.cfg.enc_mlm_prob
+            enc_mlm_prob = self.model_args.enc_mlm_prob
         else:
-            enc_mlm_prob = self.cfg.data_mlm_prob
+            enc_mlm_prob = self.model_args.data_mlm_prob
 
         enc_outputs = self.encoder(
             masked_input_ids,
             attention_mask,
             token_type_ids,
             position_ids,
-            bag_word_weight=bag_word_weight,
-            labels=mlm_labels,
+            enc_mlm_labels=mlm_labels,
             disable_encoding=False,
             disable_decoding=True,
         )
-        dict_for_loss["mlm_enc_loss"] = enc_outputs.enc_loss
-        dict_for_loss["bow_loss"] = enc_outputs.bow_loss
+        dict_for_loss["mlm_enc_loss"] = enc_outputs["loss"]
+
         # decoder masking and forward
         if dec_masked_input_ids is None:
-            if self.cfg.dec_mlm_overlap == "random":
+            if self.model_args.dec_mlm_overlap == "random":
                 extra_masked_flags, exclude_flags = None, None
-                dec_mlm_prob = self.cfg.dec_mlm_prob
-            elif self.cfg.dec_mlm_overlap == "inclusive":
-                assert self.cfg.dec_mlm_prob >= enc_mlm_prob
+                dec_mlm_prob = self.model_args.dec_mlm_prob
+            elif self.model_args.dec_mlm_overlap == "inclusive":
+                assert self.model_args.dec_mlm_prob >= enc_mlm_prob
                 extra_masked_flags, exclude_flags = masked_flags, None
-                dec_mlm_prob = (self.cfg.dec_mlm_prob - enc_mlm_prob) / (
+                dec_mlm_prob = (self.model_args.dec_mlm_prob - enc_mlm_prob) / (
                     1.0 - enc_mlm_prob
                 )
-            elif self.cfg.dec_mlm_overlap == "exclusive":
-                assert self.cfg.dec_mlm_prob <= (1.0 - enc_mlm_prob)
+            elif self.model_args.dec_mlm_overlap == "exclusive":
+                assert self.model_args.dec_mlm_prob <= (1.0 - enc_mlm_prob)
                 extra_masked_flags, exclude_flags = None, masked_flags
-                dec_mlm_prob = self.cfg.dec_mlm_prob / (1.0 - enc_mlm_prob)
+                dec_mlm_prob = self.model_args.dec_mlm_prob / (1.0 - enc_mlm_prob)
             else:
                 raise NotImplementedError
 
@@ -141,23 +140,29 @@ class LexmaeLearner(LearnerMixin):
         dec_outputs = self.encoder(
             dec_input_ids=dec_masked_input_ids,
             dec_attention_mask=dec_attention_mask,
-            # dec_token_type_ids=None,
+            dec_token_type_ids=None,
             dec_position_ids=None,
-            enc_cls_rep=enc_outputs.sentence_embedding,
-            enc_hidden_states=enc_outputs.hidden_states,
-            dec_labels=dec_mlm_labels,
+            enc_cls_rep=enc_outputs["sentence_embedding"],
+            enc_hidden_states=enc_outputs["hidden_states"],
+            dec_mlm_labels=dec_mlm_labels,
             disable_encoding=True,
             disable_decoding=False,
         )
-        dict_for_loss["mlm_dec_loss"] = dec_outputs.dec_loss
-        total_loss = (
-            self.cfg.bow_loss_weight * dict_for_loss["bow_loss"]
-            + self.cfg.mlm_enc_loss_weight * dict_for_loss["mlm_enc_loss"]
-            + self.cfg.mlm_dec_loss_weight * dict_for_loss["mlm_dec_loss"]
-        )
-        dict_for_loss["loss"] = total_loss
+        dict_for_loss["mlm_dec_loss"] = dec_outputs["dec_loss"]
 
-        return dict_for_loss
+        loss = 0.0
+        for k in dict_for_loss:
+            if k + "_weight" in dict_for_meta:
+                if dict_for_meta[k + "_weight"] == 0.0:
+                    loss += 0.0  # save calc
+                else:
+                    loss += dict_for_meta[k + "_weight"] * dict_for_loss[k]
+            else:
+                loss += dict_for_loss[k]
+        dict_for_loss["loss"] = loss
+
+        dict_for_meta.update(dict_for_loss)
+        return dict_for_meta
 
 
 def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
@@ -214,7 +219,6 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                         "loss": loss_dict["loss"].item(),
                         "mlm_enc_loss": loss_dict["mlm_enc_loss"].item(),
                         "mlm_dec_loss": loss_dict["mlm_dec_loss"].item(),
-                        "bow_loss": loss_dict["bow_loss"].item(),
                     },
                     step=(epoch * len(train_dataloader)) + step,
                 )
@@ -260,13 +264,11 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                 )
 
 
-@hydra.main(config_path="conf", config_name="modernbert")
+@hydra.main(config_path="conf", config_name="bert")
 def main(cfg: DictConfig):
     config = AutoConfig.from_pretrained(cfg.model.model_name_or_path)
     config.n_head_layers = cfg.n_head_layers
-    encoder = ModernBertForLexMAE.from_pretrained(
-        cfg.model.model_name_or_path, config=config
-    )
+    encoder = BertForEDMLM.from_pretrained(cfg.model.model_name_or_path, config=config)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.model_name_or_path)
     model = LexmaeLearner(cfg, config, tokenizer, encoder)
 

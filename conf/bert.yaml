@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 num_train_epochs: 3
-batch_size: 48
+batch_size: 64
 accumulation_steps: 16
 n_head_layers: 2
 
@@ -18,14 +18,14 @@ mlm_dec_loss_weight: 1.0
 bow_loss_weight: 1.0
 
 wandb: True
-wandb_project: "modernbert-lexmae"
+wandb_project: "bert-lexmae"
 log_every: 20
 model:
-  model_name_or_path: "answerdotai/modernbert-base"
+  model_name_or_path: "bert-base-uncased"
   max_length: 256
 
 checkpoint:
-  checkpoint_path: "checkpoints/modernbert-lexmae"
+  checkpoint_path: "checkpoints/bert-lexmae"
   max_to_keep: 3
   checkpoint_every: 500
 evaluation:
