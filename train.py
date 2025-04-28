@@ -4,7 +4,7 @@ from modern_lexmae import ModernBertForLexMAE
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
-from data import LexMAECollate
+from data import LexMAECollate, LexMAECollateDupMAE
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoConfig
 import hydra
@@ -296,7 +296,7 @@ def main(cfg: DictConfig):
         dataset,
         num_workers=4,
         batch_size=cfg.batch_size,
-        collate_fn=LexMAECollate(tokenizer, max_length=cfg.model.max_length),
+        collate_fn=LexMAECollateDupMAE(tokenizer, max_length=cfg.model.max_length),
         pin_memory=True,
     )
     heavyball.utils.compile_mode = None
