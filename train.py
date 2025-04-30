@@ -307,12 +307,21 @@ def main(cfg: DictConfig):
     #     lr=cfg.optimizer.learning_rate,
     #     weight_decay=cfg.optimizer.weight_decay,
     # )
-    optimizer = heavyball.ForeachSFAdamW(
+    # optimizer = heavyball.ForeachSFAdamW(
+    #     optimizer_grouped_parameters,
+    #     lr=cfg.optimizer.learning_rate,
+    #     warmup_steps=cfg.optimizer.warmup_steps,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    #     foreach=True,
+    # )
+    optimizer = heavyball.ForeachSOAP(
         optimizer_grouped_parameters,
         lr=cfg.optimizer.learning_rate,
         warmup_steps=cfg.optimizer.warmup_steps,
         weight_decay=cfg.optimizer.weight_decay,
         foreach=True,
+        update_clipping=trust_region_clip_,
+        gradient_clipping=rmsnorm_clip_,
     )
     train(cfg, train_dataloader, model, optimizer, device, tokenizer)
 
