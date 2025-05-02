@@ -1,4 +1,5 @@
 import os
+import copy
 from datetime import datetime
 from modern_lexmae import ModernBertForLexMAE
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
@@ -220,13 +221,35 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                 )
 
             if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 5:
-                model.eval()
+                model.to("cpu")
+                for p in model.parameters():
+                    p.grad = None
+
+                for state in optimizer.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.cpu()
+
+                torch.cuda.empty_cache()
+
+                eval_model = copy.deepcopy(model).to(device).eval()
+
                 val_results = validate_lexmae(
                     evaluator,
-                    model,
+                    eval_model,
                     tokenizer,
                     device,
                 )
+
+                del eval_model
+                torch.cuda.empty_cache()  # drop eval copy VRAM
+
+                model.to(device)
+                for state in optimizer.state.values():  # push opt. state back
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+
                 model.train()
 
                 if cfg.wandb:
