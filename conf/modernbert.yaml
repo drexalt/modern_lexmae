@@ -2,7 +2,7 @@
 defaults:
   - _self_
 
-num_train_epochs: 3
+num_train_epochs: 4
 batch_size: 48
 accumulation_steps: 16
 n_head_layers: 2
@@ -27,15 +27,15 @@ model:
 checkpoint:
   checkpoint_path: "checkpoints/modernbert-lexmae"
   max_to_keep: 3
-  checkpoint_every: 500
+  checkpoint_every: 200
 evaluation:
   eval_every_steps: 5000
-  datasets: ["scifact", "quoraretrieval", "msmarco"]
+  datasets: ["scifact", "quoraretrieval", "msmarco", "touche2020", "scidocs", "nfcorpus"]
   batch_size: 8
 optimizer:
   learning_rate: 5e-4
   enc_learning_rate: 3e-5
   dec_learning_rate: 8e-4
-  warmup_steps: 15000
+  warmup_steps: 4000
   every_k_schedule: 4
-  weight_decay: 0.01
+  weight_decay: 0.00
