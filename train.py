@@ -174,6 +174,9 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
             config={
                 "batch_size": cfg.batch_size,
                 "learning_rate": cfg.optimizer.learning_rate,
+                "enc_learning_rate": cfg.optimizer.enc_learning_rate,
+                "dec_learning_rate": cfg.optimizer.dec_learning_rate,
+                "weight_decay": cfg.optimizer.weight_decay,
                 "warmup_steps": cfg.optimizer.warmup_steps,
                 "head_layers": cfg.n_head_layers,
                 "optimizer": optimizer.__class__.__name__,
