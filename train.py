@@ -5,7 +5,7 @@ from modern_lexmae import ModernBertForLexMAE
 from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
-from data import LexMAECollate, LexMAECollateDupMAE
+from data import LexMAECollateDupMAE
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoConfig
 import hydra
@@ -220,7 +220,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                     step=(epoch * len(train_dataloader)) + step,
                 )
 
-            if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 5:
+            if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 50:
                 model.to("cpu")
                 for p in model.parameters():
                     p.grad = None
@@ -337,12 +337,13 @@ def main(cfg: DictConfig):
     #     weight_decay=cfg.optimizer.weight_decay,
     #     foreach=True,
     # )
-    optimizer = heavyball.ForeachSOAP(
+    optimizer = heavyball.ForeachPSGDKron(
         optimizer_grouped_parameters,
         lr=cfg.optimizer.learning_rate,
         warmup_steps=cfg.optimizer.warmup_steps,
         weight_decay=cfg.optimizer.weight_decay,
         foreach=True,
+        delayed=True,
         update_clipping=trust_region_clip_,
         gradient_clipping=rmsnorm_clip_,
     )
