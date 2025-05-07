@@ -212,3 +212,38 @@ def mlm_input_ids_masking_onthefly(
             # Tokens with random_probs >= threshold_rdm_upper but < mlm_prob stay unchanged
 
         return masked_input_ids, selected_for_masking, mlm_labels, random_probs
+
+
+def build_param_groups(
+    model, enc_lr, dec_lr, weight_decay, norm_keywords=("norm", "layernorm", "rmsnorm")
+):
+    encoder_decay, encoder_no_decay = [], []
+    decoder_decay, decoder_no_decay = [], []
+
+    ENCODER_PREFIXES = ("model.", "head.")
+    DECODER_PREFIXES = ("dec_head.", "decoder.", "decoder_heads.")
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # ----- decide whether this param gets weight-decay -----
+        is_bias = name.endswith(".bias")
+        is_norm = any(kw in name.lower() for kw in norm_keywords)
+        no_decay = is_bias or is_norm
+
+        # ----- route to encoder vs decoder bucket -----
+        if name.startswith(ENCODER_PREFIXES):
+            (encoder_no_decay if no_decay else encoder_decay).append(param)
+        elif name.startswith(DECODER_PREFIXES):
+            (decoder_no_decay if no_decay else decoder_decay).append(param)
+        else:
+            # anything that slips through (e.g. embeddings) → encoder side
+            (encoder_no_decay if no_decay else encoder_decay).append(param)
+
+    return [
+        {"params": encoder_decay, "lr": enc_lr, "weight_decay": weight_decay},
+        {"params": encoder_no_decay, "lr": enc_lr, "weight_decay": 0.0},
+        {"params": decoder_decay, "lr": dec_lr, "weight_decay": weight_decay},
+        {"params": decoder_no_decay, "lr": dec_lr, "weight_decay": 0.0},
+    ]

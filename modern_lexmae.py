@@ -58,6 +58,8 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
         self.decoder.bias.requires_grad = False
 
         k = self.n_head_layers
+
+        # Take initialization from last layers
         for i, dec_layer in enumerate(self.decoder_heads):
             src_layer = self.model.layers[-k + i]  # encoder L‑k+i
 

@@ -2,7 +2,11 @@ import os
 import copy
 from datetime import datetime
 from modern_lexmae import ModernBertForLexMAE
-from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
+from utils import (
+    mlm_input_ids_masking_onthefly,
+    update_checkpoint_tracking,
+    build_param_groups,
+)
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
 from data import LexMAECollateDupMAE
@@ -296,23 +300,12 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    encoder_params = []
-    decoder_params = []
-    base_model_prefix = model.encoder.base_model_prefix
-    encoder_head_prefix = "head."
-    for name, param in model.encoder.named_parameters():
-        if param.requires_grad:
-            if name.startswith(base_model_prefix + ".") or name.startswith(
-                encoder_head_prefix
-            ):
-                encoder_params.append(param)
-            else:
-                decoder_params.append(param)
-
-    optimizer_grouped_parameters = [
-        {"params": encoder_params, "lr": cfg.optimizer.enc_learning_rate},
-        {"params": decoder_params, "lr": cfg.optimizer.dec_learning_rate},
-    ]
+    optimizer_grouped_parameters = build_param_groups(
+        model,
+        cfg.optimizer.enc_learning_rate,
+        cfg.optimizer.dec_learning_rate,
+        cfg.optimizer.weight_decay,
+    )
 
     dataset = load_dataset("BeIR/msmarco", "corpus", split="corpus")
     train_dataloader = DataLoader(
