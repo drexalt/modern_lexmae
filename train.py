@@ -4,7 +4,7 @@ from datetime import datetime
 from modern_lexmae import ModernBertForLexMAE
 from utils import (
     mlm_input_ids_masking_onthefly,
-    update_checkpoint_tracking,
+    update_checkpoint_tracking_val,
     build_param_groups,
 )
 from peach.enc_utils.enc_learners import LearnerMixin
@@ -173,7 +173,6 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
             project=cfg.wandb_project,
             config={
                 "batch_size": cfg.batch_size,
-                "learning_rate": cfg.optimizer.learning_rate,
                 "enc_learning_rate": cfg.optimizer.enc_learning_rate,
                 "dec_learning_rate": cfg.optimizer.dec_learning_rate,
                 "weight_decay": cfg.optimizer.weight_decay,
@@ -193,7 +192,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
         hydra.utils.to_absolute_path(cfg.checkpoint.checkpoint_path), timestamp
     )
     os.makedirs(checkpoint_directory, exist_ok=True)
-    checkpoint_losses = []
+    checkpoint_scores = []
     evaluator = NanoBEIREvaluator(
         dataset_names=cfg.evaluation.datasets,
         score_functions={"dot": dot_score},
@@ -275,14 +274,10 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                         step=(epoch * len(train_dataloader)) + step,
                     )
 
-            if (
-                cfg.checkpoint.checkpoint_every > 0
-                and (step + 1) % cfg.checkpoint.checkpoint_every == 0
-            ):
-                checkpoint_losses = update_checkpoint_tracking(
+                checkpoint_scores = update_checkpoint_tracking_val(
                     step=(epoch * len(train_dataloader)) + step,
-                    loss=loss_dict["loss"].item(),
-                    checkpoint_losses=checkpoint_losses,
+                    score=val_results["msmarco_mrr@10"],
+                    checkpoint_scores=checkpoint_scores,
                     max_checkpoints=cfg.checkpoint.max_to_keep,
                     model=model,
                     optimizer=optimizer,

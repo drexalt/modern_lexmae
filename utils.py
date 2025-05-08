@@ -1,7 +1,7 @@
 import torch
 from functools import reduce
 import os
-from heapq import heappush, heapreplace
+from heapq import heappush, heapreplace, heappop
 
 
 def save_checkpoint(
@@ -247,3 +247,50 @@ def build_param_groups(
         {"params": decoder_decay, "lr": dec_lr, "weight_decay": weight_decay},
         {"params": decoder_no_decay, "lr": dec_lr, "weight_decay": 0.0},
     ]
+
+
+def save_checkpoint_val(
+    step: int,
+    score: float,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: str,
+) -> str:
+    checkpoint = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+        "ndcg@10": score,
+    }
+    filepath = os.path.join(
+        checkpoint_path, f"checkpoint_step_{step}_ndcg_{score:.4f}.pt"
+    )
+    torch.save(checkpoint, filepath)
+    return filepath
+
+
+def update_checkpoint_tracking_val(
+    step: int,
+    score: float,
+    checkpoint_scores: list,
+    max_checkpoints: int,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    checkpoint_path: str,
+) -> list:
+    # Create a new list to maintain purity
+    updated_checkpoint_scores = checkpoint_scores.copy()
+
+    if len(updated_checkpoint_scores) < max_checkpoints:
+        filepath = save_checkpoint(step, score, model, optimizer, checkpoint_path)
+        heappush(updated_checkpoint_scores, (score, step, filepath))
+    elif score > updated_checkpoint_scores[0][0]:  # Compare with lowest score
+        # Remove lowest scoring checkpoint
+        _, old_step, old_filepath = heappop(updated_checkpoint_scores)
+        if os.path.exists(old_filepath):
+            os.remove(old_filepath)
+        # Save new checkpoint
+        filepath = save_checkpoint(step, score, model, optimizer, checkpoint_path)
+        heappush(updated_checkpoint_scores, (score, step, filepath))
+
+    return updated_checkpoint_scores
