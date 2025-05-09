@@ -2,7 +2,11 @@ import os
 import copy
 from datetime import datetime
 from bert_reference import BertForEDMLM
-from utils import mlm_input_ids_masking_onthefly, update_checkpoint_tracking
+from utils import (
+    mlm_input_ids_masking_onthefly,
+    update_checkpoint_tracking_val,
+    build_param_groups,
+)
 from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
 from data import LexMAECollateDupMAE
@@ -188,7 +192,8 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
         hydra.utils.to_absolute_path(cfg.checkpoint.checkpoint_path), timestamp
     )
     os.makedirs(checkpoint_directory, exist_ok=True)
-    checkpoint_losses = []
+
+    checkpoint_scores = []
     evaluator = NanoBEIREvaluator(
         dataset_names=cfg.evaluation.datasets,
         score_functions={"dot": dot_score},
@@ -221,8 +226,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                     },
                     step=(epoch * len(train_dataloader)) + step,
                 )
-
-            if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 5:
+            if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 50:
                 model.to("cpu")
                 for p in model.parameters():
                     p.grad = None
@@ -270,14 +274,10 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                         step=(epoch * len(train_dataloader)) + step,
                     )
 
-            if (
-                cfg.checkpoint.checkpoint_every > 0
-                and (step + 1) % cfg.checkpoint.checkpoint_every == 0
-            ):
-                checkpoint_losses = update_checkpoint_tracking(
+                checkpoint_scores = update_checkpoint_tracking_val(
                     step=(epoch * len(train_dataloader)) + step,
-                    loss=loss_dict["loss"].item(),
-                    checkpoint_losses=checkpoint_losses,
+                    score=val_results["msmarco_mrr@10"],
+                    checkpoint_scores=checkpoint_scores,
                     max_checkpoints=cfg.checkpoint.max_to_keep,
                     model=model,
                     optimizer=optimizer,
@@ -296,24 +296,12 @@ def main(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    encoder_params = []
-    decoder_params = []
-    base_model_prefix = model.encoder.base_model_prefix
-    encoder_head_prefix = "head."
-    for name, param in model.encoder.named_parameters():
-        if param.requires_grad:
-            if name.startswith(base_model_prefix + ".") or name.startswith(
-                encoder_head_prefix
-            ):
-                encoder_params.append(param)
-            else:
-                decoder_params.append(param)
-
-    optimizer_grouped_parameters = [
-        {"params": encoder_params, "lr": cfg.optimizer.enc_learning_rate},
-        {"params": decoder_params, "lr": cfg.optimizer.dec_learning_rate},
-    ]
-
+    optimizer_grouped_parameters = build_param_groups(
+        model,
+        cfg.optimizer.enc_learning_rate,
+        cfg.optimizer.dec_learning_rate,
+        cfg.optimizer.weight_decay,
+    )
     dataset = load_dataset("BeIR/msmarco", "corpus", split="corpus")
     train_dataloader = DataLoader(
         dataset,
@@ -330,15 +318,26 @@ def main(cfg: DictConfig):
     #     lr=cfg.optimizer.learning_rate,
     #     weight_decay=cfg.optimizer.weight_decay,
     # )
-    optimizer = heavyball.ForeachSFAdamW(
+    # optimizer = heavyball.ForeachSFAdamW(
+    #     optimizer_grouped_parameters,
+    #     lr=cfg.optimizer.learning_rate,
+    #     warmup_steps=cfg.optimizer.warmup_steps,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    #     foreach=True,
+    #     gradient_clipping=trust_region_clip_,
+    #     update_clipping=rmsnorm_clip_,
+    # )
+    optimizer = heavyball.ForeachPSGDKron(
         optimizer_grouped_parameters,
         lr=cfg.optimizer.learning_rate,
         warmup_steps=cfg.optimizer.warmup_steps,
         weight_decay=cfg.optimizer.weight_decay,
         foreach=True,
-        gradient_clipping=trust_region_clip_,
-        update_clipping=rmsnorm_clip_,
+        delayed=True,
+        update_clipping=trust_region_clip_,
+        gradient_clipping=rmsnorm_clip_,
     )
+
     train(cfg, train_dataloader, model, optimizer, device, tokenizer)
 
 
