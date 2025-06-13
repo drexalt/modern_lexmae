@@ -276,7 +276,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
 
                 checkpoint_scores = update_checkpoint_tracking_val(
                     step=(epoch * len(train_dataloader)) + step,
-                    score=val_results["msmarco_mrr@10"],
+                    score=val_results["mrr@10"],
                     checkpoint_scores=checkpoint_scores,
                     max_checkpoints=cfg.checkpoint.max_to_keep,
                     model=model,
@@ -289,6 +289,13 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
 def main(cfg: DictConfig):
     config = AutoConfig.from_pretrained(cfg.model.model_name_or_path)
     config.n_head_layers = cfg.n_head_layers
+
+    # ### TRYING ROPE SCALING
+    # scaling_factor = config.max_position_embeddings / cfg.model.max_length
+
+    # config.global_rope_theta /= scaling_factor
+    # config.local_rope_theta /= scaling_factor
+
     encoder = ModernBertForLexMAE.from_pretrained(
         cfg.model.model_name_or_path, config=config
     )
