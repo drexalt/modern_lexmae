@@ -162,11 +162,11 @@ class ST_LexMAEModule(nn.Module):
             # Max-pool over sequence dimension to get [batch_size, vocab_size]
             values = torch.amax(logits, dim=1)
 
-            top_values, _ = torch.topk(values, k=64, dim=-1)
+            top_values, _ = torch.topk(values, k=256, dim=-1)
             threshold = top_values[..., -1, None]
             values = values * (values >= threshold)
 
-            features["sentence_embedding"] = values.cpu()
+            features["sentence_embedding"] = values
         return features
 
     # def forward(self, features: dict) -> dict:
