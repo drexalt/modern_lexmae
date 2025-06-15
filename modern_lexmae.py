@@ -54,8 +54,8 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
         self._tie_or_clone_weights(self.dec_head.dense, self.head.dense)
         self._tie_or_clone_weights(self.dec_head.norm, self.head.norm)
 
-        self.decoder.weight.requires_grad = False
-        self.decoder.bias.requires_grad = False
+        # self.decoder.weight.requires_grad = False
+        # self.decoder.bias.requires_grad = False
 
         k = self.n_head_layers
 
@@ -504,6 +504,7 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                             labels=labels,
                         )
 
+            need_hidden_states = self.training or not disable_decoding
             # Run encoder
             outputs = self.model(
                 input_ids=input_ids,
@@ -517,7 +518,7 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                 batch_size=batch_size,
                 seq_len=seq_len,
                 output_attentions=output_attentions,
-                output_hidden_states=True,  # Always get hidden states for LexMAE
+                output_hidden_states=need_hidden_states,  # Always get hidden states for LexMAE
                 return_dict=True,
             )
             last_hidden_state = outputs.last_hidden_state
@@ -561,14 +562,18 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
                 bow_loss = self.bow_ot_loss(ot_emb, bag_word_weight)
 
             # Generate bottleneck representation with padded mlm_logits
-            enc_cls_rep = self.generate_bottleneck_repre(
-                input_ids=input_ids_padded,
-                attention_mask=attention_mask,
-                bottleneck_src="logits",
-                special_token_ids=self.special_token_ids,
-                word_embeddings_matrix=self.model.embeddings.tok_embeddings.weight,
-                last_hidden_states=last_hidden_state,
-                mlm_logits=enc_logits_full,  # Now [4, 512, vocab_size]
+            enc_cls_rep = (
+                self.generate_bottleneck_repre(
+                    input_ids=input_ids_padded,
+                    attention_mask=attention_mask,
+                    bottleneck_src="logits",
+                    special_token_ids=self.special_token_ids,
+                    word_embeddings_matrix=self.model.embeddings.tok_embeddings.weight,
+                    last_hidden_states=last_hidden_state,
+                    mlm_logits=enc_logits_full,  # Now [4, 512, vocab_size]
+                )
+                if need_hidden_states
+                else None
             )
 
             # # Compute encoder loss with sparse prediction if applicable
@@ -600,14 +605,16 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
             # last_hidden_state = _pad_modernbert_output(
             #     last_hidden_state, indices, batch_size, seq_len
             # )
-            enc_hidden_states = outputs.hidden_states
+            enc_hidden_states = outputs.hidden_states if need_hidden_states else None
 
             # Prepare return dictionary
             return_dict_out.enc_loss = enc_loss
             return_dict_out.bow_loss = bow_loss
             return_dict_out.logits = enc_logits_full
-            return_dict_out.sentence_embedding = enc_cls_rep
-            return_dict_out.hidden_states = enc_hidden_states
+            if enc_cls_rep is not None:
+                return_dict_out.sentence_embedding = enc_cls_rep
+            if enc_hidden_states is not None:
+                return_dict_out.hidden_states = enc_hidden_states
             return_dict_out.attentions = outputs.attentions
 
             if enc_loss is not None or bow_loss is not None:
@@ -725,3 +732,279 @@ class ModernBertForLexMAE(ModernBertForMaskedLM):
             self._init_weights(module.attn.Wo)
             self._init_weights(module.mlp.Wi)
             self._init_weights(module.mlp.Wo)
+
+
+class ModernBertForLexMAEStatic(ModernBertForLexMAE):
+    def forward_decoder_heads(
+        self,
+        enc_cls_rep: torch.Tensor,
+        dec_input_ids: Optional[torch.LongTensor] = None,
+        dec_attention_mask: Optional[torch.Tensor] = None,
+        dec_position_ids: Optional[torch.Tensor] = None,
+        enc_hidden_states: Optional[Tuple[torch.Tensor]] = None,
+        batch_size: Optional[int] = None,
+        seq_len: Optional[int] = None,
+        output_attentions: Optional[bool] = False,
+    ):
+        # 1) Embeddings
+        if dec_input_ids is not None:
+            hidden_states = self.model.embeddings(input_ids=dec_input_ids)
+        elif self.skip_from is not None and enc_hidden_states is not None:
+            hidden_states = enc_hidden_states[self.skip_from]
+        else:
+            raise ValueError(
+                "Provide dec_input_ids or enc_hidden_states with skip_from."
+            )
+
+        # 2) Infer shapes if needed
+        if batch_size is None or seq_len is None:
+            batch_size, seq_len = hidden_states.shape[:2]
+        device = hidden_states.device
+
+        # 3) Attention & position ids
+        if dec_attention_mask is None:
+            if dec_input_ids is not None:
+                dec_attention_mask = (dec_input_ids != self.config.pad_token_id).to(
+                    dtype=torch.bool, device=device
+                )
+            else:
+                dec_attention_mask = torch.ones(
+                    (batch_size, seq_len), device=device, dtype=torch.bool
+                )
+
+        if dec_position_ids is None:
+            dec_position_ids = (
+                torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+            )
+
+        attn_mask_4d, sliding_window_mask = self._prepare_non_fa2_masks(
+            dec_attention_mask, output_attentions, batch_size, seq_len
+        )
+
+        # 4) Inject encoder CLS representation
+        hidden_states = hidden_states.clone()  # avoid inplace on shared tensor
+        hidden_states[:, 0] = enc_cls_rep  # [CLS] token replacement
+
+        # 5) Run decoder layers
+        intermediate = [hidden_states]
+        dec_attns = [] if output_attentions else None
+
+        for layer in self.decoder_heads:
+            layer_out = layer(
+                intermediate[-1],
+                attention_mask=attn_mask_4d,
+                sliding_window_mask=sliding_window_mask,
+                position_ids=dec_position_ids,
+                output_attentions=output_attentions,
+            )
+            intermediate.append(layer_out[0])
+            if output_attentions and len(layer_out) > 1:
+                dec_attns.append(layer_out[1])
+
+        return intermediate, (dec_attns if output_attentions else None)
+
+    # ------------------------------------------------------------------ #
+    # Full forward (encoder + decoder, padded-only path)                 #
+    # ------------------------------------------------------------------ #
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        sliding_window_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        dec_input_ids: Optional[torch.LongTensor] = None,
+        dec_attention_mask: Optional[torch.Tensor] = None,
+        dec_position_ids: Optional[torch.Tensor] = None,
+        dec_labels: Optional[torch.Tensor] = None,
+        enc_cls_rep: Optional[torch.Tensor] = None,
+        enc_hidden_states: Optional[Tuple[torch.Tensor]] = None,
+        indices: Optional[torch.Tensor] = None,  # kept for API compatibility
+        cu_seqlens: Optional[torch.Tensor] = None,  # "
+        max_seqlen: Optional[int] = None,  # "
+        batch_size: Optional[int] = None,
+        seq_len: Optional[int] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        disable_encoding: bool = False,
+        disable_decoding: bool = True,
+        bag_word_weight: Optional[torch.Tensor] = None,
+    ):
+        # -------- House-keeping -------- #
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        self._maybe_set_compile()
+
+        out = LexMAEMaskedLMOutput()  # final container
+
+        input_ids_padded = input_ids.clone() if input_ids is not None else None
+        labels_padded = labels.clone() if labels is not None else None
+
+        if not disable_encoding:
+            # ---------------- Encoder ---------------- #
+            if input_ids is None and inputs_embeds is None:
+                raise ValueError("Either input_ids or inputs_embeds must be supplied")
+
+            if inputs_embeds is not None:
+                batch_size, seq_len = inputs_embeds.shape[:2]
+                device = inputs_embeds.device
+            else:
+                batch_size, seq_len = input_ids.shape[:2]
+                device = input_ids.device
+
+            if attention_mask is None:
+                attention_mask = torch.ones(
+                    (batch_size, seq_len), device=device, dtype=torch.bool
+                )
+
+            need_hidden_states = self.training or not disable_decoding
+            enc_outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                sliding_window_mask=sliding_window_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=need_hidden_states,
+                return_dict=True,
+            )
+
+            last_hidden = enc_outputs.last_hidden_state
+            enc_logits_full = (
+                self.compiled_head(last_hidden)
+                if self.config.reference_compile
+                else self.decoder(self.head(last_hidden))
+            )
+
+            # MLM loss
+            enc_loss = None
+            if labels_padded is not None:
+                if self.sparse_prediction:
+                    flat = labels_padded.view(-1)
+                    mask = flat != self.sparse_pred_ignore_index
+                    enc_logits = enc_logits_full.view(-1, self.config.vocab_size)[mask]
+                    lbl = flat[mask]
+                else:
+                    enc_logits, lbl = enc_logits_full, labels_padded
+                enc_loss = CrossEntropyLoss()(
+                    enc_logits.view(-1, self.config.vocab_size), lbl.view(-1)
+                )
+
+            # Dup-MAE BoW loss
+            bow_loss = None
+            if bag_word_weight is not None:
+                mask_text = self.text_part_mask_generation(
+                    input_ids_padded, self.special_token_ids, attention_mask
+                )
+                ot_emb = self.ot_embedding(enc_logits_full, mask_text)
+                bow_loss = self.bow_ot_loss(ot_emb, bag_word_weight)
+
+            # Bottleneck
+            enc_cls_rep = (
+                self.generate_bottleneck_repre(
+                    input_ids=input_ids_padded,
+                    attention_mask=attention_mask,
+                    bottleneck_src="logits",
+                    special_token_ids=self.special_token_ids,
+                    word_embeddings_matrix=self.model.embeddings.tok_embeddings.weight,
+                    last_hidden_states=last_hidden,
+                    mlm_logits=enc_logits_full,
+                )
+                if need_hidden_states
+                else None
+            )
+            enc_hidden_states = (
+                enc_outputs.hidden_states if need_hidden_states else None
+            )
+
+            # Populate output
+            out.enc_loss = enc_loss
+            out.bow_loss = bow_loss
+            out.logits = enc_logits_full
+            out.sentence_embedding = enc_cls_rep
+            out.hidden_states = enc_hidden_states
+            out.attentions = enc_outputs.attentions
+            if enc_loss is not None or bow_loss is not None:
+                out.loss = (enc_loss or 0) + (bow_loss or 0)
+
+        else:
+            if enc_cls_rep is None or enc_hidden_states is None:
+                raise ValueError(
+                    "enc_cls_rep and enc_hidden_states required when disable_encoding=True"
+                )
+
+        # ---------------- Decoder ---------------- #
+        if not disable_decoding:
+            # Determine shapes
+            if dec_input_ids is not None:
+                dec_batch, dec_seq = dec_input_ids.shape[:2]
+            elif enc_hidden_states is not None and self.skip_from is not None:
+                dec_batch, dec_seq = enc_hidden_states[self.skip_from].shape[:2]
+            else:
+                raise ValueError(
+                    "Provide dec_input_ids or enc_hidden_states with skip_from for decoding"
+                )
+
+            dec_hid, dec_attn = self.forward_decoder_heads(
+                enc_cls_rep,
+                dec_input_ids=dec_input_ids,
+                dec_attention_mask=dec_attention_mask,
+                dec_position_ids=dec_position_ids,
+                enc_hidden_states=enc_hidden_states,
+                batch_size=dec_batch,
+                seq_len=dec_seq,
+                output_attentions=output_attentions,
+            )
+
+            # MLM head for decoder
+            dec_last = dec_hid[-1]
+            if self.sparse_prediction and dec_labels is not None:
+                flat = dec_labels.view(-1)
+                mask = flat != self.sparse_pred_ignore_index
+                dec_last_flat = dec_last.view(-1, dec_last.size(-1))[mask]
+                dec_logits = (
+                    self.compiled_head(dec_last_flat)
+                    if self.config.reference_compile
+                    else self.decoder(self.dec_head(dec_last_flat))
+                )
+                dec_lbl = flat[mask]
+            else:
+                dec_logits = (
+                    self.compiled_head(dec_last)
+                    if self.config.reference_compile
+                    else self.decoder(self.dec_head(dec_last))
+                )
+                dec_lbl = dec_labels
+
+            dec_loss = None
+            if dec_labels is not None:
+                dec_loss = CrossEntropyLoss()(
+                    dec_logits.view(-1, self.config.vocab_size),
+                    dec_lbl.view(-1),
+                )
+
+            # Populate decoder part of output
+            out.dec_loss = dec_loss
+            out.dec_logits = dec_logits
+            out.dec_hidden_states = dec_hid
+            out.dec_attentions = dec_attn
+
+        # ---------------- Return ---------------- #
+        if not return_dict:
+            outputs = (out.logits, out.dec_logits if not disable_decoding else None)
+            return ((out.loss, out.dec_loss) + outputs) if out.loss else outputs
+
+        return out
