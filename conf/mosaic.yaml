@@ -1,0 +1,41 @@
+# conf/config.yaml
+defaults:
+  - _self_
+
+num_train_epochs: 4
+batch_size: 24
+accumulation_steps: 16
+n_head_layers: 2
+
+logging_steps: 100
+save_steps: 500
+eval_steps: 500
+enc_mlm_prob: 0.30
+dec_mlm_prob: 0.50
+dec_mlm_overlap: "inclusive"  # Options: random, inclusive, exclusive
+mlm_enc_loss_weight: 1.0
+mlm_dec_loss_weight: 1.0
+bow_loss_weight: 0.7
+
+wandb: True
+wandb_project: "mosaic-lexmae"
+log_every: 20
+model:
+  model_name_or_path: "mosaicml/mosaic-bert-base-seqlen-256"
+  max_length: 256
+
+checkpoint:
+  checkpoint_path: "checkpoints/mosaic-lexmae"
+  max_to_keep: 3
+  checkpoint_every: 200
+evaluation:
+  eval_every_steps: 5000
+  datasets: ["scifact", "quoraretrieval", "msmarco", "touche2020", "scidocs", "nfcorpus"]
+  batch_size: 8
+optimizer:
+  learning_rate: 5e-4
+  enc_learning_rate: 3e-5
+  dec_learning_rate: 8e-5
+  warmup_steps: 10000
+  every_k_schedule: 4
+  weight_decay: 0.01
