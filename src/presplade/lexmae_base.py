@@ -88,7 +88,7 @@ class LexMAEBase(PreTrainedModel):
         # LexMAE‑specific hyper‑parameters (with sane defaults)
         self.n_head_layers: int = getattr(config, "n_head_layers", 2)
         self.skip_from: Optional[int] = getattr(config, "skip_from", None)
-        self.bow_loss_weight: float = getattr(config, "bow_loss_weight", 0.0)
+        self.bow_loss_weight: float = getattr(config, "bow_loss_weight", 0.5)
         self.bottleneck_src: str = getattr(config, "bottleneck_src", "logits")
 
         # Special tokens for (a) bottleneck masking, (b) DupMAE BoW loss
