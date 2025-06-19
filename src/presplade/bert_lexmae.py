@@ -7,7 +7,7 @@ from transformers import (
 )
 from transformers.models.bert.modeling_bert import BertLayer
 
-from lexmae_base import LexMAEBase
+from .lexmae_base import LexMAEBase
 
 
 class BertAdapter(LexMAEBase):
@@ -19,6 +19,19 @@ class BertAdapter(LexMAEBase):
     def _build_decoder_layer(self) -> nn.Module:
         """Return a single `BertLayer` initialised with the encoder config."""
         return BertLayer(self.encoder.config)
+
+    def tie_weights(self):
+        """Tie prediction head weights in addition to base class tying."""
+        super().tie_weights()
+
+        enc_lm_head = self.encoder.get_lm_head()
+        dec_lm_head = self.decoder_lm_head
+
+        if hasattr(enc_lm_head, "transform") and hasattr(dec_lm_head, "transform"):
+            enc_transform = enc_lm_head.transform
+            dec_transform = dec_lm_head.transform
+            self._tie_or_clone_weights(dec_transform.dense, enc_transform.dense)
+            self._tie_or_clone_weights(dec_transform.LayerNorm, enc_transform.LayerNorm)
 
     @classmethod
     def from_pretrained(

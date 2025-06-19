@@ -115,18 +115,7 @@ class LexMAEBase(PreTrainedModel):
         if hasattr(self.encoder, "tie_weights"):
             self.encoder.tie_weights()
 
-        # 2) tie decoder's projection matrix to encoder's word embeddings
-        enc_out_emb = self.encoder.get_output_embeddings()
-        dec_out_emb = (
-            self.decoder_lm_head.decoder
-            if hasattr(self.decoder_lm_head, "decoder")  # BERT/Roberta style
-            else self.decoder_lm_head
-        )
-        if (
-            enc_out_emb is not None
-            and dec_out_emb.weight.shape == enc_out_emb.weight.shape
-        ):
-            self._tie_or_clone_weights(dec_out_emb, enc_out_emb)
+        # Implement the rest of weight tying in subclass
 
     def forward_decoder_heads(
         self,

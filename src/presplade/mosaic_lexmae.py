@@ -6,6 +6,7 @@ from transformers import (
 from typing import Any, Dict
 import importlib
 import torch
+import copy
 
 from .lexmae_base import LexMAEBase
 
@@ -77,6 +78,48 @@ class MosaicLexMAE(LexMAEBase):
         )(self.encoder.config)
 
         return _MosaicLayerWrapper(BertLayer, self.encoder.config)
+
+    def _build_decoder_head(self) -> nn.Module:
+        """Return a prediction head for the decoder, cloning from encoder."""
+
+        # Mosaic's BertForMaskedLM has the head at `cls`
+        enc_head = getattr(self.encoder, "cls", None)
+        if enc_head is None:
+            return super()._build_decoder_head()
+        return copy.deepcopy(enc_head)
+
+    def tie_weights(self):
+        """Tie projection and transformation layers between encoder and decoder heads."""
+        super().tie_weights()  # Runs encoder's internal tying
+
+        enc_lm_head = getattr(self.encoder, "cls", None)
+        dec_lm_head = self.decoder_lm_head
+
+        # Tie the final projection layer to the word embeddings
+        enc_out_emb = self.encoder.get_output_embeddings()
+        if (
+            enc_out_emb is not None
+            and enc_lm_head is not None
+            and hasattr(dec_lm_head, "predictions")
+            and hasattr(dec_lm_head.predictions, "decoder")
+        ):
+            dec_out_emb = dec_lm_head.predictions.decoder
+            if (
+                hasattr(dec_out_emb, "weight")
+                and enc_out_emb.weight.shape == dec_out_emb.weight.shape
+            ):
+                self._tie_or_clone_weights(dec_out_emb, enc_out_emb)
+
+        # Tie the transformation layers (dense + layernorm)
+        if (
+            enc_lm_head is not None
+            and hasattr(enc_lm_head, "predictions")
+            and hasattr(dec_lm_head, "predictions")
+        ):
+            enc_transform = enc_lm_head.predictions.transform
+            dec_transform = dec_lm_head.predictions.transform
+            self._tie_or_clone_weights(dec_transform.dense, enc_transform.dense)
+            self._tie_or_clone_weights(dec_transform.LayerNorm, enc_transform.LayerNorm)
 
     @classmethod
     def from_pretrained(
