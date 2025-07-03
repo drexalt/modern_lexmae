@@ -218,6 +218,7 @@ class LexMAEBase(PreTrainedModel):
             encoder_hidden = kwargs["enc_hidden_states"]
             bow_loss = None
             enc_loss = None
+            encoder_logits = None
 
         dec_loss = dec_logits = dec_hidden = dec_attn = None
         if not disable_decoding:

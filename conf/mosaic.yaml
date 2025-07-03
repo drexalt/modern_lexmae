@@ -38,4 +38,4 @@ optimizer:
   dec_learning_rate: 8e-5
   warmup_steps: 10000
   every_k_schedule: 4
-  weight_decay: 0.01
+  weight_decay: 0.00

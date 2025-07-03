@@ -3,10 +3,11 @@ from transformers import (
     AutoModelForMaskedLM,
     PreTrainedModel,
 )
-from typing import Any, Dict
+from typing import Any, Dict, List
 import importlib
 import torch
 import copy
+import math
 
 from .lexmae_base import LexMAEBase
 
@@ -16,6 +17,54 @@ class _MosaicLayerWrapper(nn.Module):
         super().__init__()
         self.core = core
         self.config = config
+        self._current_alibi_size = int(config.alibi_starting_size)
+        self.alibi = torch.zeros(
+            (
+                1,
+                self.config.num_attention_heads,
+                self._current_alibi_size,
+                self._current_alibi_size,
+            )
+        )
+        self.build_alibi(
+            self.config.num_attention_heads, self._current_alibi_size, self.alibi.device
+        )
+
+    def build_alibi(self, n_heads, size, device):
+        n_heads = self.config.num_attention_heads
+
+        def _get_alibi_head_slopes(n_heads: int) -> List[float]:
+            def get_slopes_power_of_2(n_heads: int) -> List[float]:
+                start = 2 ** (-(2 ** -(math.log2(n_heads) - 3)))
+                ratio = start
+                return [start * ratio**i for i in range(n_heads)]
+
+            # In the paper, they only train models that have 2^a heads for some a. This function
+            # has some good properties that only occur when the input is a power of 2. To
+            # maintain that even when the number of heads is not a power of 2, we use a
+            # workaround.
+            if math.log2(n_heads).is_integer():
+                return get_slopes_power_of_2(n_heads)
+
+            closest_power_of_2 = 2 ** math.floor(math.log2(n_heads))
+            slopes_a = get_slopes_power_of_2(closest_power_of_2)
+            slopes_b = _get_alibi_head_slopes(2 * closest_power_of_2)
+            slopes_b = slopes_b[0::2][: n_heads - closest_power_of_2]
+            return slopes_a + slopes_b
+
+        context_position = torch.arange(size, device=device)[:, None]
+        memory_position = torch.arange(size, device=device)[None, :]
+        relative_position = torch.abs(memory_position - context_position)
+        # [n_heads, max_token_length, max_token_length]
+        relative_position = relative_position.unsqueeze(0).expand(n_heads, -1, -1)
+        slopes = torch.Tensor(_get_alibi_head_slopes(n_heads)).to(device)
+        alibi = slopes.unsqueeze(1).unsqueeze(1) * -relative_position
+        # [1, n_heads, max_token_length, max_token_length]
+        alibi = alibi.unsqueeze(0)
+        assert alibi.shape == torch.Size([1, n_heads, size, size])
+
+        self._current_alibi_size = size
+        self.alibi = alibi
 
     def forward(self, hidden, attention_mask=None, output_attentions=False):
         # ----- book-keeping for Mosaic-style unpadding --------------------
@@ -32,17 +81,17 @@ class _MosaicLayerWrapper(nn.Module):
         max_len = int(lengths.max())
         attn_mask_slice = attention_mask[:, :max_len]  # [bs, max_len]
         flat_idx = torch.nonzero(attn_mask_slice.flatten(), as_tuple=False).squeeze()
+
+        self.build_alibi(self.config.num_attention_heads, max_len, device)
+        bias_alibi = self.alibi.expand(bs, -1, -1, -1)
+
         # -----------------------------------------------------------------
 
         # 1) UNPAD --------------------------  [total_nnz, h]
         unpadded = hidden.view(-1, self.config.hidden_size)[flat_idx]
 
-        bias = hidden.new_zeros(
-            bs,
-            self.config.num_attention_heads,
-            max_len,
-            max_len,
-        )
+        # extended_attention_mask = (1.0 - attn_mask_slice[:, None, None, :]) * -10000.0
+        bias = (-10000.0 * (1 - attn_mask_slice[:, None, None, :])) + bias_alibi
 
         # 2) run Mosaic layer (expects un-padded inputs)
         out = self.core(
@@ -56,11 +105,9 @@ class _MosaicLayerWrapper(nn.Module):
         )
 
         # 3) PAD BACK so LexMAEBase can keep using the HF convention
-        padded = (
-            out.new_zeros(bs * L, self.config.hidden_size)
-            .index_copy_(0, flat_idx, out)
-            .view(bs, L, -1)
-        )
+        padded = hidden.clone()
+        padded.view(-1, self.config.hidden_size)[flat_idx] = out
+
         return (padded, None)  # mimic HF (hidden_states, attn)
 
 
@@ -103,13 +150,9 @@ class MosaicLexMAE(LexMAEBase):
             and hasattr(dec_lm_head, "predictions")
             and hasattr(dec_lm_head.predictions, "decoder")
         ):
-            dec_out_emb = dec_lm_head.predictions.decoder
-            if (
-                hasattr(dec_out_emb, "weight")
-                and enc_out_emb.weight.shape == dec_out_emb.weight.shape
-            ):
-                self._tie_or_clone_weights(dec_out_emb, enc_out_emb)
-
+            self._tie_or_clone_weights(
+                dec_lm_head.predictions.decoder, enc_lm_head.predictions.decoder
+            )
         # Tie the transformation layers (dense + layernorm)
         if (
             enc_lm_head is not None

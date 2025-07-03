@@ -90,18 +90,19 @@ class LexmaeLearner(LearnerMixin):
                 )
             )
 
-        # enc_outputs = self.encoder(
-        #     masked_input_ids,
-        #     attention_mask,
-        #     token_type_ids,
-        #     position_ids,
-        #     bag_word_weight=bag_word_weight,
-        #     labels=mlm_labels,
-        #     disable_encoding=False,
-        #     disable_decoding=True,
-        # )
-        # dict_for_loss["mlm_enc_loss"] = enc_outputs.enc_loss
-        # dict_for_loss["bow_loss"] = enc_outputs.bow_loss
+        enc_outputs = self.encoder(
+            input_ids=masked_input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            bag_word_weight=bag_word_weight,
+            enc_mlm_labels=mlm_labels,
+            disable_encoding=False,
+            disable_decoding=True,
+        )
+        mlm_enc_loss = enc_outputs.enc_loss
+        bow_loss = enc_outputs.bow_loss if enc_outputs.bow_loss is not None else 0.0
+
         # decoder masking and forward
         if dec_masked_input_ids is None:
             if self.cfg.dec_mlm_overlap == "random":
@@ -140,26 +141,23 @@ class LexmaeLearner(LearnerMixin):
         dec_attention_mask = (
             dec_attention_mask if dec_attention_mask is not None else attention_mask
         )
-        out = self.encoder(
-            # encoder inputs
-            input_ids=masked_input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            bag_word_weight=bag_word_weight,
-            enc_mlm_labels=mlm_labels,
-            # decoder inputs
+
+        dec_outputs = self.encoder(
             dec_input_ids=dec_masked_input_ids,
-            dec_attention_mask=attention_mask,  # same shape as enc
+            dec_attention_mask=dec_attention_mask,
             dec_mlm_labels=dec_mlm_labels,
-            # run both towers
-            disable_encoding=False,
+            enc_cls_rep=enc_outputs.sentence_embedding,
+            enc_hidden_states=enc_outputs.hidden_states,
+            disable_encoding=True,
             disable_decoding=False,
         )
+
+        mlm_dec_loss = dec_outputs.dec_loss
+
         loss_dict = {
-            "mlm_enc_loss": out.enc_loss,
-            "mlm_dec_loss": out.dec_loss,
-            "bow_loss": out.bow_loss if out.bow_loss is not None else 0.0,
+            "mlm_enc_loss": mlm_enc_loss,
+            "mlm_dec_loss": mlm_dec_loss,
+            "bow_loss": bow_loss,
         }
         loss_dict["loss"] = (
             self.cfg.mlm_enc_loss_weight * loss_dict["mlm_enc_loss"]
@@ -339,13 +337,23 @@ def main(cfg: DictConfig):
     #     weight_decay=cfg.optimizer.weight_decay,
     #     foreach=True,
     # )
-    optimizer = heavyball.ForeachAdamW(
+    # optimizer = heavyball.ForeachAdamW(
+    #     optimizer_grouped_parameters,
+    #     lr=cfg.optimizer.learning_rate,
+    #     warmup_steps=cfg.optimizer.warmup_steps,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    #     foreach=True,
+    #     caution=True,
+    # )
+    optimizer = heavyball.ForeachPSGDKron(
         optimizer_grouped_parameters,
         lr=cfg.optimizer.learning_rate,
         warmup_steps=cfg.optimizer.warmup_steps,
         weight_decay=cfg.optimizer.weight_decay,
         foreach=True,
-        caution=True,
+        delayed=True,
+        gradient_clipping=trust_region_clip_,
+        update_clipping=rmsnorm_clip_,
     )
     train(cfg, train_dataloader, model, optimizer, device, tokenizer)
 
