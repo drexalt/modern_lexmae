@@ -2,14 +2,12 @@
 NeoBERT ↔ LexMAE adapter
 ------------------------
 
-This mirrors the working BERT-based LexMAE path and composes a
-`transformers` masked‑LM encoder with a small decoder tower for LexMAE.
+Compose a NeoBERT masked‑LM encoder with a small decoder tower for LexMAE.
+We grab the exact `EncoderBlock` symbol from the loaded model’s module to
+build decoder layers — no fallbacks or name‑search heuristics.
 
-Notes
-- Requires a NeoBERT decoder/encoder layer class to be importable. No fallbacks
-  to BERT blocks are used.
-- Weight tying for the decoder head is handled by LexMAEBase’s default
-  logic (clone/tie to the encoder MLM head when shapes permit).
+Only the number of decoder layers differs; all other parameters mirror the
+encoder. Weight tying for heads is handled by LexMAEBase defaults.
 """
 
 from __future__ import annotations
@@ -17,46 +15,9 @@ from __future__ import annotations
 from typing import Any, Dict
 import torch.nn as nn
 from transformers import AutoModelForMaskedLM, PreTrainedModel
+import importlib
 
 from .lexmae_base import LexMAEBase
-
-
-"""Resolve a NeoBERT layer class from likely locations.
-
-We accept any of the following (first found wins):
-  - transformers.models.neobert.modeling_neobert.NeoBertEncoderLayer
-  - transformers.models.neobert.modeling_neobert.NeoBertLayer
-  - transformers.models.neobert.modeling_neobert.EncoderBlock (custom impl)
-"""
-
-NeoBertLayerType = None
-_NEOBERT_LAYER_NAME = None
-_layer_import_error = None
-try:  # common naming in HF-style ports
-    from transformers.models.neobert.modeling_neobert import (  # type: ignore
-        NeoBertEncoderLayer as _NeoBertLayer,
-    )
-
-    NeoBertLayerType = _NeoBertLayer
-    _NEOBERT_LAYER_NAME = getattr(_NeoBertLayer, "__name__", "NeoBertEncoderLayer")
-except Exception as e1:  # pragma: no cover
-    try:
-        from transformers.models.neobert.modeling_neobert import (  # type: ignore
-            NeoBertLayer as _NeoBertLayer,
-        )
-
-        NeoBertLayerType = _NeoBertLayer
-        _NEOBERT_LAYER_NAME = getattr(_NeoBertLayer, "__name__", "NeoBertLayer")
-    except Exception as e2:  # pragma: no cover
-        try:
-            from transformers.models.neobert.modeling_neobert import (  # type: ignore
-                EncoderBlock as _NeoBertLayer,
-            )
-
-            NeoBertLayerType = _NeoBertLayer
-            _NEOBERT_LAYER_NAME = getattr(_NeoBertLayer, "__name__", "EncoderBlock")
-        except Exception as e3:  # pragma: no cover
-            _layer_import_error = (e1, e2, e3)
 
 
 class NeoBertAdapter(LexMAEBase):
@@ -78,54 +39,46 @@ class NeoBertAdapter(LexMAEBase):
         return freqs[:seqlen].unsqueeze(0).to(device)
 
     def _build_decoder_layer(self) -> nn.Module:
-        if NeoBertLayerType is None:
+        # Import EncoderBlock symbol from the loaded model’s module (like Mosaic path)
+        module = importlib.import_module(self.encoder.__class__.__module__)
+        if not hasattr(module, "EncoderBlock"):
             raise ImportError(
-                "Could not locate a NeoBERT layer class. Expected one of: "
-                "NeoBertEncoderLayer, NeoBertLayer, or EncoderBlock in "
-                "transformers.models.neobert.modeling_neobert. Ensure your NeoBERT "
-                "package/registers these symbols."
+                "Expected `EncoderBlock` in the loaded NeoBERT module. "
+                "Ensure your model defines `EncoderBlock(config)` in the same module as the LM head."
             )
-        # If we resolved to a custom EncoderBlock, wrap it to match the
-        # (hidden, attn) → tuple API used by LexMAEBase.
-        if _NEOBERT_LAYER_NAME == "EncoderBlock":
-            Block = NeoBertLayerType  # type: ignore[assignment]
+        Block = getattr(module, "EncoderBlock")
 
-            class _EncoderBlockWrapper(nn.Module):
-                def __init__(self, config, freqs_getter):
-                    super().__init__()
-                    self.block = Block(config)
-                    self.config = config
-                    self._freqs_getter = freqs_getter
+        class _EncoderBlockWrapper(nn.Module):
+            def __init__(self, config, freqs_getter):
+                super().__init__()
+                self.block = Block(config)
+                self.config = config
+                self._freqs_getter = freqs_getter
 
-                def forward(self, hidden_states, attention_mask=None, output_attentions=False):
-                    bs, seqlen, _ = hidden_states.shape
-                    # Expand attention mask to [bs, heads, L, L] if provided
-                    attn_mask = None
-                    if attention_mask is not None:
-                        if attention_mask.dim() == 2:
-                            attn_mask = (
-                                attention_mask.unsqueeze(1).unsqueeze(1)
-                                .repeat(1, self.config.num_attention_heads, seqlen, 1)
-                            )
-                        else:
-                            attn_mask = attention_mask
-                    freqs = self._freqs_getter(hidden_states.device, seqlen)
-                    out, attn = self.block(
-                        hidden_states,
-                        attn_mask,
-                        freqs,
-                        output_attentions,
-                        max_seqlen=None,
-                        cu_seqlens=None,
-                    )
-                    if output_attentions:
-                        return (out, attn)
-                    return (out,)
+            def forward(self, hidden_states, attention_mask=None, output_attentions=False):
+                bs, seqlen, _ = hidden_states.shape
+                # Expand 2D mask → [bs, heads, L, L] to match EncoderBlock multiply path
+                attn_mask = None
+                if attention_mask is not None:
+                    if attention_mask.dim() == 2:
+                        attn_mask = (
+                            attention_mask.unsqueeze(1).unsqueeze(1)
+                            .repeat(1, self.config.num_attention_heads, seqlen, 1)
+                        )
+                    else:
+                        attn_mask = attention_mask
+                freqs = self._freqs_getter(hidden_states.device, seqlen)
+                out, attn = self.block(
+                    hidden_states,
+                    attn_mask,
+                    freqs,
+                    output_attentions,
+                    max_seqlen=None,
+                    cu_seqlens=None,
+                )
+                return (out, attn) if output_attentions else (out,)
 
-            return _EncoderBlockWrapper(self.encoder.config, self._get_freqs_cis)
-
-        # Otherwise, assume HF-style layer signature
-        return NeoBertLayerType(self.encoder.config)
+        return _EncoderBlockWrapper(self.encoder.config, self._get_freqs_cis)
 
     @classmethod
     def from_pretrained(
@@ -144,7 +97,9 @@ class NeoBertAdapter(LexMAEBase):
         ...     lexmae_cfg=dict(n_head_layers=2, skip_from=-2, bottleneck_src="logits"),
         ... )
         """
-        # 1) Load a regular masked‑LM checkpoint from HF Hub
+        # 1) Load a masked‑LM checkpoint (trust remote code by default)
+        if "trust_remote_code" not in hf_kwargs:
+            hf_kwargs["trust_remote_code"] = True
         encoder: PreTrainedModel = AutoModelForMaskedLM.from_pretrained(
             model_name_or_path, **hf_kwargs
         )
