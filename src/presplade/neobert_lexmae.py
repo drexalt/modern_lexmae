@@ -1,3 +1,5 @@
+# pyright: basic
+
 """
 NeoBERT ↔ LexMAE adapter
 ------------------------
@@ -16,6 +18,7 @@ from typing import Any, Dict
 import torch.nn as nn
 from transformers import AutoModelForMaskedLM, PreTrainedModel
 import importlib
+import types
 
 from .lexmae_base import LexMAEBase
 
@@ -55,14 +58,17 @@ class NeoBertAdapter(LexMAEBase):
                 self.config = config
                 self._freqs_getter = freqs_getter
 
-            def forward(self, hidden_states, attention_mask=None, output_attentions=False):
+            def forward(
+                self, hidden_states, attention_mask=None, output_attentions=False
+            ):
                 bs, seqlen, _ = hidden_states.shape
                 # Expand 2D mask → [bs, heads, L, L] to match EncoderBlock multiply path
                 attn_mask = None
                 if attention_mask is not None:
                     if attention_mask.dim() == 2:
                         attn_mask = (
-                            attention_mask.unsqueeze(1).unsqueeze(1)
+                            attention_mask.unsqueeze(1)
+                            .unsqueeze(1)
                             .repeat(1, self.config.num_attention_heads, seqlen, 1)
                         )
                     else:
@@ -108,6 +114,42 @@ class NeoBertAdapter(LexMAEBase):
         lexmae_cfg = lexmae_cfg or {}
         for k, v in lexmae_cfg.items():
             setattr(encoder.config, k, v)
+
+        # 2b) Ensure HF embedding accessors exist and work on this instance.
+        #     Override even if base class defines stubs that return None.
+        if not hasattr(encoder, "model") or not hasattr(encoder.model, "encoder"):
+            raise AttributeError(
+                "Loaded NeoBERT LM head must expose `model.encoder` (input embeddings)."
+            )
+        if not hasattr(encoder, "decoder"):
+            raise AttributeError(
+                "Loaded NeoBERT LM head must expose `decoder` (output embeddings / LM head)."
+            )
+
+        def _get_input_embeddings(self):
+            return self.model.encoder  # type: ignore[attr-defined]
+
+        def _set_input_embeddings(self, value):
+            self.model.encoder = value  # type: ignore[attr-defined]
+
+        def _get_output_embeddings(self):
+            return self.decoder  # type: ignore[attr-defined]
+
+        def _set_output_embeddings(self, value):
+            self.decoder = value  # type: ignore[attr-defined]
+
+        encoder.get_input_embeddings = types.MethodType(
+            _get_input_embeddings, encoder
+        )  # type: ignore[attr-defined]
+        encoder.set_input_embeddings = types.MethodType(
+            _set_input_embeddings, encoder
+        )  # type: ignore[attr-defined]
+        encoder.get_output_embeddings = types.MethodType(
+            _get_output_embeddings, encoder
+        )  # type: ignore[attr-defined]
+        encoder.set_output_embeddings = types.MethodType(
+            _set_output_embeddings, encoder
+        )  # type: ignore[attr-defined]
 
         # 3) Wrap and return
         return cls(encoder=encoder, config=encoder.config)

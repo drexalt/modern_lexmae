@@ -1,5 +1,7 @@
+# pyright: basic
+
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union, List, Dict, Any
+from typing import Optional, Tuple, Union, List, Any
 
 import torch
 import torch.nn as nn
@@ -186,6 +188,15 @@ class LexMAEBase(PreTrainedModel):
             encoder_logits = enc_out.logits  # [bs, L, V]
             encoder_hidden = enc_out.hidden_states  # tuple(len_layers) of [bs, L, h]
 
+            # Some remote models (e.g. custom NeoBERT) don't compute loss in their LM head.
+            # If labels were provided but loss is None, compute it here.
+            enc_loss = enc_out.loss
+            if enc_loss is None and enc_mlm_labels is not None and encoder_logits is not None:
+                enc_loss = CrossEntropyLoss()(
+                    encoder_logits.view(-1, self.encoder.config.vocab_size),
+                    enc_mlm_labels.view(-1),
+                )
+
             last_hidden = encoder_hidden[-1] if encoder_hidden is not None else None
 
             # Sentence‑level bottleneck representation (Eq. 4)
@@ -208,7 +219,7 @@ class LexMAEBase(PreTrainedModel):
                 ot_emb = ot_embedding(encoder_logits, mask_text)
                 bow_loss = bow_ot_loss(ot_emb, bag_word_weight)
 
-            enc_loss = enc_out.loss  # already computed by HF loss head
+            # enc_loss may be computed above if the remote head didn't provide it
         else:
             assert "enc_cls_rep" in kwargs and "enc_hidden_states" in kwargs, (
                 "When disable_encoding=True you must pass pre‑computed \n"
