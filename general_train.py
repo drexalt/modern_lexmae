@@ -1,7 +1,9 @@
+# pyright: basic
+
 import os
 import copy
 from datetime import datetime
-from presplade.mosaic_lexmae import MosaicLexMAE
+from presplade.neobert_lexmae import NeoBertAdapter
 from utils import (
     mlm_input_ids_masking_onthefly,
     update_checkpoint_tracking_val,
@@ -11,7 +13,7 @@ from peach.enc_utils.enc_learners import LearnerMixin
 from datasets import load_dataset
 from data import LexMAECollateDupMAE
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoConfig, get_wsd_schedule
 import hydra
 from omegaconf import DictConfig
 import heavyball
@@ -202,6 +204,14 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
         show_progress_bar=True,
     )
 
+    scheduler = get_wsd_schedule(
+        optimizer,
+        num_warmup_steps=cfg.optimizer.warmup_steps,
+        num_decay_steps=cfg.optimizer.decay_steps,
+        min_lr_ratio=0.1,
+        num_stable_steps=cfg.optimizer.stable_steps,
+    )
+
     for epoch in range(cfg.num_train_epochs):
         for step, batch in enumerate(tqdm(train_dataloader)):
             batch = {k: v.to(device) for k, v in batch.items()}  # Move batch to device
@@ -215,6 +225,7 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                 train_dataloader
             ):
                 optimizer.step()
+                scheduler.step()
                 optimizer.zero_grad()
 
             if cfg.wandb and step % cfg.log_every == 0:
@@ -229,36 +240,49 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                 )
 
             if (step + 1) % cfg.evaluation.eval_every_steps == 0 or step == 50:
-                model.to("cpu")
-                for p in model.parameters():
-                    p.grad = None
+                # model.to("cpu")
+                # for p in model.parameters():
+                #     p.grad = None
+                #
+                # for state in optimizer.state.values():
+                #     for k, v in state.items():
+                #         if isinstance(v, torch.Tensor):
+                #             state[k] = v.cpu()
+                #
+                # torch.cuda.empty_cache()
+                #
+                # eval_model = copy.deepcopy(model).to(device).eval()
+                #
+                # val_results = validate_lexmae(
+                #     evaluator,
+                #     eval_model,
+                #     tokenizer,
+                #     device,
+                # )
+                #
+                # del eval_model
+                # torch.cuda.empty_cache()  # drop eval copy VRAM
+                #
+                # model.to(device)
+                # for state in optimizer.state.values():  # push opt. state back
+                #     for k, v in state.items():
+                #         if isinstance(v, torch.Tensor):
+                #             state[k] = v.to(device)
+                #
+                model.eval()
 
-                for state in optimizer.state.values():
-                    for k, v in state.items():
-                        if isinstance(v, torch.Tensor):
-                            state[k] = v.cpu()
-
-                torch.cuda.empty_cache()
-
-                eval_model = copy.deepcopy(model).to(device).eval()
-
-                val_results = validate_lexmae(
-                    evaluator,
-                    eval_model,
-                    tokenizer,
-                    device,
-                )
-
-                del eval_model
-                torch.cuda.empty_cache()  # drop eval copy VRAM
-
-                model.to(device)
-                for state in optimizer.state.values():  # push opt. state back
-                    for k, v in state.items():
-                        if isinstance(v, torch.Tensor):
-                            state[k] = v.to(device)
-
+                with torch.no_grad():
+                    val_results = validate_lexmae(
+                        evaluator,
+                        model,
+                        tokenizer,
+                        device,
+                        top_k=512,
+                        max_length=cfg.model.max_length,
+                    )
                 model.train()
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
 
                 if cfg.wandb:
                     # Flatten results for wandb logging
@@ -287,18 +311,16 @@ def train(cfg, train_dataloader, model, optimizer, device, tokenizer):
                 )
 
 
-@hydra.main(config_path="conf", config_name="mosaic")
+@hydra.main(config_path="conf", config_name="neobert")
 def main(cfg: DictConfig):
-    config = AutoConfig.from_pretrained(cfg.model.model_name_or_path)
+    config = AutoConfig.from_pretrained(
+        cfg.model.model_name_or_path, trust_remote_code=True
+    )
     config.n_head_layers = cfg.n_head_layers
 
-    # ### TRYING ROPE SCALING
-    # scaling_factor = config.max_position_embeddings / cfg.model.max_length
-
-    # config.global_rope_theta /= scaling_factor
-    # config.local_rope_theta /= scaling_factor
-
-    encoder = MosaicLexMAE.from_pretrained(cfg.model.model_name_or_path, config=config)
+    encoder = NeoBertAdapter.from_pretrained(
+        cfg.model.model_name_or_path, config=config, trust_remote_code=True
+    )
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
     model = LexmaeLearner(cfg, config, tokenizer, encoder)
 
@@ -325,11 +347,11 @@ def main(cfg: DictConfig):
     heavyball.utils.compile_mode = None
     heavyball.utils.set_torch()
 
-    # optimizer = torch.optim.AdamW(
-    #     model.encoder.parameters(),
-    #     lr=cfg.optimizer.learning_rate,
-    #     weight_decay=cfg.optimizer.weight_decay,
-    # )
+    optimizer = torch.optim.AdamW(
+        model.encoder.parameters(),
+        lr=cfg.optimizer.learning_rate,
+        weight_decay=cfg.optimizer.weight_decay,
+    )
     # optimizer = heavyball.ForeachSFAdamW(
     #     optimizer_grouped_parameters,
     #     lr=cfg.optimizer.learning_rate,
@@ -345,16 +367,16 @@ def main(cfg: DictConfig):
     #     foreach=True,
     #     caution=True,
     # )
-    optimizer = heavyball.ForeachPSGDKron(
-        optimizer_grouped_parameters,
-        lr=cfg.optimizer.learning_rate,
-        warmup_steps=cfg.optimizer.warmup_steps,
-        weight_decay=cfg.optimizer.weight_decay,
-        foreach=True,
-        delayed=True,
-        gradient_clipping=trust_region_clip_,
-        update_clipping=rmsnorm_clip_,
-    )
+    # optimizer = heavyball.ForeachPSGDKron(
+    #     optimizer_grouped_parameters,
+    #     lr=cfg.optimizer.learning_rate,
+    #     warmup_steps=cfg.optimizer.warmup_steps,
+    #     weight_decay=cfg.optimizer.weight_decay,
+    #     foreach=True,
+    #     delayed=True,
+    #     gradient_clipping=trust_region_clip_,
+    #     update_clipping=rmsnorm_clip_,
+    # )
     train(cfg, train_dataloader, model, optimizer, device, tokenizer)
 
 
