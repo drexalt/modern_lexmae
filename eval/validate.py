@@ -1,9 +1,17 @@
 from sentence_transformers import SentenceTransformer
 from .st_wrapper import ST_LexMAEModule
 import torch
+import gc
 
 
-def validate_lexmae(evaluator, model, tokenizer, device):
+def validate_lexmae(
+    evaluator,
+    model,
+    tokenizer,
+    device,
+    top_k=256,
+    max_length=256,
+):
     """
     Run NanoBEIR evaluation on the LexMAE model for zero-shot retrieval.
 
@@ -17,7 +25,7 @@ def validate_lexmae(evaluator, model, tokenizer, device):
         Dictionary of evaluation metrics (e.g., NDCG@10, MRR@10).
     """
     # Create the SentenceTransformer module
-    st_module = ST_LexMAEModule(model, tokenizer, max_length=tokenizer.model_max_length)
+    st_module = ST_LexMAEModule(model, tokenizer, max_length=max_length, top_k=top_k)
     st_model = SentenceTransformer(modules=[st_module], device=device).eval()
 
     # Evaluate with no gradient computation
@@ -27,6 +35,7 @@ def validate_lexmae(evaluator, model, tokenizer, device):
 
     # Clean up
     del st_module, st_model
+    gc.collect()
     torch.cuda.empty_cache()
 
     # Extract metrics
